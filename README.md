@@ -3,7 +3,7 @@
 Instructional design tool optimized for self-hosted websites leveraging AI
 tools.
 
-Main repo: [useful][https://github.com/ohmstone/useful].
+Main repo: [useful](https://github.com/ohmstone/useful).
 
 ## Goal
 
@@ -45,8 +45,8 @@ The current name was chosen because I want to build something _useful_.
 
 ## Potential tools
 
-- [pocket tts][https://github.com/kyutai-labs/pocket-tts?tab=readme-ov-file]
-- [ollama][https://ollama.com/]
+- [pocket tts](https://github.com/kyutai-labs/pocket-tts?tab=readme-ov-file)
+- [ollama](https://ollama.com/)
 
 ## Contributing
 
