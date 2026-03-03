@@ -12,7 +12,12 @@ website that plays like a video.
 ## Running
 
 ```
-deno run --allow-net --allow-read --allow-write --allow-env=HOME app.ts [--config <path>]
+deno run --allow-net --allow-read --allow-write --allow-env=HOME --allow-run app.ts [--config <path>]
+```
+
+Or use the dev task (includes `--watch`):
+```
+deno task dev
 ```
 
 | Flag | Default | Description |
@@ -27,19 +32,57 @@ Port defaults to **7700**, auto-increments if busy (scans up to +50).
 
 ```
 app.ts                          # Deno HTTP server, all routes, no dependencies
+deno.json                       # Activates Deno LS in IDE; defines dev task
 core/
   index.html                    # SPA shell — mounts <app-root>, loads fonts + CSS
   style.css                     # CSS custom properties (theme tokens) + global reset
   main.js                       # ES module entry; imports all components (leaves first)
+  tts                           # TTS binary (call: tts -wav <out>.wav "<text>")
   components/
-    course-card.js              # <course-card>   — displays one course directory
-    course-list.js              # <course-list>   — course grid + new-course form
-    dir-browser.js              # <dir-browser>   — filesystem navigator
-    dir-picker.js               # <dir-picker>    — first-run setup shell
-    app-root.js                 # <app-root>      — top-level shell, state machine
+    course-card.js              # <course-card>    — displays one course; dispatches course-open
+    course-list.js              # <course-list>    — course grid + new-course form
+    course-view.js              # <course-view>    — ordered module list for a course
+    dir-browser.js              # <dir-browser>    — filesystem navigator
+    dir-picker.js               # <dir-picker>     — first-run setup shell
+    slide-preview.js            # <slide-preview>  — 16:9 slide display + nav; exports parseSlides()
+    audio-track.js              # <audio-track>    — horizontal timeline; accepts drops
+    audio-library.js            # <audio-library>  — TTS generation + clip list; clips are draggable
+    module-editor.js            # <module-editor>  — full editing view; imports parseSlides
+    app-root.js                 # <app-root>       — top-level shell, state + nav machine
 .config/                        # Auto-created next to app.ts (or --config path)
   config.json                   # { "projectDir": string | null }
 ```
+
+---
+
+## On-disk data layout
+
+```
+<projectDir>/
+  <course>/
+    modules.json                # ["module-name", ...]  (ordered)
+    <module>/
+      slides.txt                # Slide definitions (see format below)
+      track.json                # [{ file, startTime, duration }]
+      audio/
+        <timestamp>.wav         # Generated audio clip
+        <timestamp>.meta.json   # { text, duration }
+```
+
+### Slides format (`slides.txt`)
+
+```
+=== <seconds>
+Slide content here.
+Can be multiple lines.
+
+=== <seconds>
+Next slide.
+```
+
+Each `=== N` line starts a new slide with duration N seconds. Content follows
+until the next `===` marker. Parsed client-side by `parseSlides()` in
+[slide-preview.js](core/components/slide-preview.js).
 
 ---
 
@@ -49,133 +92,151 @@ Single-file Deno HTTP server. Zero external dependencies.
 
 ### Config directory
 
-Resolved at startup in priority order:
-1. `--config <path>` CLI flag
-2. `.config/` next to `app.ts`
-
+Resolved at startup: `--config <path>` flag › `.config/` next to `app.ts`.
 Created automatically if it doesn't exist.
 
-### Port selection
+### TTS
 
-`findPort(7700)` — tries `Deno.listen({ port })` from 7700 upward; first
-success wins.
+The `core/tts` binary is invoked as:
+```
+tts -wav <absolute-output-path>.wav "<text>"
+```
+cwd is set to `core/` so TTS can find its data files. Needs `--allow-run`.
 
 ### API routes
 
 | Method | Path | Body | Response | Description |
 |--------|------|------|----------|-------------|
-| GET | `/api/config` | — | `Config` | Read current config |
+| GET | `/api/config` | — | `Config` | Read config |
 | POST | `/api/config` | `{ projectDir }` | `Config` | Set project dir (must exist) |
-| GET | `/api/courses` | — | `Course[]` | List course dirs in projectDir |
-| POST | `/api/courses` | `{ name }` | `Course` | Create new course directory |
-| GET | `/api/browse?path=` | — | `BrowseResult` | List subdirs at path (default: `$HOME`) |
-| POST | `/api/mkdir` | `{ parent, name }` | `{ path }` | Create a subdirectory |
-
-All other requests are served as static files from `core/`.
+| GET | `/api/courses` | — | `Course[]` | List course dirs |
+| POST | `/api/courses` | `{ name }` | `Course` | Create course dir |
+| GET | `/api/browse?path=` | — | `BrowseResult` | List subdirs (default `$HOME`) |
+| POST | `/api/mkdir` | `{ parent, name }` | `{ path }` | Create subdir |
+| GET | `/api/modules/:course` | — | `string[]` | Ordered module list |
+| POST | `/api/modules/:course` | `{ name }` | `{ name }` | Create module (dir + scaffolding) |
+| GET | `/api/slides/:course/:module` | — | `text/plain` | Get slides.txt content |
+| PUT | `/api/slides/:course/:module` | `text/plain` | 204 | Save slides.txt |
+| GET | `/api/track/:course/:module` | — | `TrackClip[]` | Get track composition |
+| PUT | `/api/track/:course/:module` | `TrackClip[]` | 204 | Save track |
+| GET | `/api/audio/:course/:module` | — | `AudioMeta[]` | List generated audio |
+| POST | `/api/audio/:course/:module` | `{ text }` | `AudioMeta` | Generate audio via TTS |
+| GET | `/api/audio/:course/:module/:file` | — | `audio/wav` | Serve WAV file |
+| DELETE | `/api/audio/:course/:module/:file` | — | 204 | Delete WAV + meta |
 
 ### Static file serving
 
-`serveFile(pathname)` maps requests to `core/<pathname>`. Requests containing
-`..` return 403. Unknown extensions get `application/octet-stream`.
+Non-API requests serve from `core/`. Path traversal (`..`) → 403.
 
 ---
 
 ## Frontend
 
-Single-page application. No build step, no bundler, no framework.
+SPA. No build step, no bundler, no framework. All web components use Shadow DOM.
 
 ### CSS theming
 
-All theme tokens are CSS custom properties on `:root` in `style.css`.
-Because custom properties pierce Shadow DOM boundaries, all components
-automatically inherit the dark theme.
+Theme tokens on `:root` in `style.css`. CSS custom properties pierce Shadow DOM
+boundaries — all components inherit the dark theme automatically.
 
-Key tokens: `--bg`, `--surface`, `--surface-raised`, `--border`,
-`--text`, `--text-muted`, `--text-dim`, `--accent`, `--accent-deep`,
-`--danger`, `--radius`, `--radius-lg`, `--font`.
+Key tokens: `--bg`, `--surface`, `--surface-raised`, `--border`, `--text`,
+`--text-muted`, `--text-dim`, `--accent`, `--accent-deep`, `--danger`,
+`--radius`, `--radius-lg`, `--font`.
 
 ### Component tree
 
 ```
-<app-root>              state machine: loading → setup | ready
-  <dir-picker>          rendered in 'setup' state
-    <dir-browser>       filesystem navigator; user selects or creates a dir
-  <course-list>         rendered in 'ready' state
-    <course-card> ×N    one per course directory
+<app-root>              state machine + navigation
+  <dir-picker>          setup state
+    <dir-browser>       filesystem navigator
+  <course-list>         courses view (nav = null)
+    <course-card> ×N
+  <course-view>         course view (nav.type = 'course')
+  <module-editor>       editor view (nav.type = 'module')
+    <slide-preview>
+    <audio-track>
+    <audio-library>
 ```
-
-All components use Shadow DOM (`attachShadow({ mode: 'open' })`).
 
 ### App state machine (`<app-root>`)
 
 ```
          fetch /api/config
-loading ──────────────────► setup   (projectDir is null)
-   │                         │
-   │                         │ config-updated event
-   │                         ▼
-   └────────────────────► ready    (projectDir is set)
+loading ──────────────────► setup  (no projectDir)
+   │                          │ config-updated
+   │                          ▼
+   └────────────────────► ready
+                            │
+                    #nav = null → <course-list>
+                    #nav.type = 'course' → <course-view>
+                    #nav.type = 'module' → <module-editor>
 ```
 
-### Custom events (all: `bubbles: true, composed: true`)
+Navigation events (all `bubbles: true, composed: true`):
 
-| Event | Dispatched by | Caught by | Detail |
-|-------|--------------|-----------|--------|
-| `dir-selected` | `<dir-browser>` | `<dir-picker>` | `{ path: string }` |
-| `config-updated` | `<dir-picker>` | `<app-root>` | `Config` object |
+| Event | Dispatched by | Detail |
+|-------|--------------|--------|
+| `config-updated` | `<dir-picker>` | `Config` |
+| `course-open` | `<course-card>` | `{ name }` |
+| `module-open` | `<course-view>` | `{ course, name }` |
+| `nav-back` | `<course-view>`, `<module-editor>` | — |
 
-`composed: true` allows events to cross Shadow DOM boundaries as they bubble.
+### Module editor layout
 
----
+```
+┌─ nav bar: [← Back] [Save Slides] [status] ─────────┐
+│                                                     │
+│  ┌─── Slides (textarea) ──┬─── Preview (16:9) ───┐ │
+│  │ === 5                  │  [slide content]      │ │
+│  │ Slide content…         │  ← 1 / 3 →            │ │
+│  └────────────────────────┴───────────────────────┘ │
+│                                                     │
+│  ─── Audio Track ─────────────────────────────────  │
+│  |0s   |5s   |10s  |15s   ...  (scrollable)        │
+│  [clip────] [clip──────]                            │
+│                                                     │
+│  ─── Generated Audio ─────────────────────────────  │
+│  [Text to speak…              ] [Generate]          │
+│  ▶ clip.wav  "hello world"  2.1s  [✕]              │
+└─────────────────────────────────────────────────────┘
+```
 
-## Component reference
+Drag clips from the Generated Audio list onto the Audio Track.
+Click a track clip to remove it.
 
-### `<app-root>`
-Top-level shell. Owns the state machine (`loading` / `setup` / `ready`).
-Renders the header (logo + project path) and swaps the main view based on state.
-Listens for `config-updated` in its constructor (host element, not shadow root).
+### Audio drag-and-drop
 
-### `<dir-picker>`
-Shown in `setup` state. Wraps `<dir-browser>` in a card with a title and
-description. Listens for `dir-selected` (constructor), calls `POST /api/config`
-with the chosen path, then dispatches `config-updated`. Errors are written
-directly to `#error` element without re-rendering (preserves dir-browser state).
-
-### `<dir-browser>`
-Filesystem navigator. Fetches `GET /api/browse?path=` to populate a directory
-listing. Provides:
-- Breadcrumb navigation (clicking a segment navigates up)
-- Directory list (clicking an entry navigates into it)
-- **"Use this folder"** → dispatches `dir-selected` with current path
-- **"Create folder here"** form → calls `POST /api/mkdir`, then dispatches
-  `dir-selected` with the newly created path
-
-### `<course-list>`
-Fetches `GET /api/courses` and renders a CSS grid of `<course-card>` elements.
-Includes an inline "+ New Course" form that calls `POST /api/courses`.
-All state and DOM wiring are handled internally; re-renders shadow DOM on state
-change and re-attaches listeners after each render.
-
-### `<course-card>`
-Purely presentational. Attributes: `name`. Property: `contents` (string[]).
-Shows course name, item count, and first 8 contents. Uses private class fields.
+- `<audio-library>` sets `draggable="true"` on clip rows
+- `dragstart`: `dataTransfer.setData('application/json', { file, text, duration })`
+- `<audio-track>` listens for `dragover`/`drop` on its wrapper element
+- On drop: calculates `startTime = dropX / PX_PER_SEC` (40 px/s), adds clip, auto-saves
 
 ---
 
 ## Data formats
 
-### Config (`config.json`)
+### Config
 ```json
-{ "projectDir": "/absolute/path/to/courses" }
+{ "projectDir": "/absolute/path" }
 ```
 
-### Course (API)
+### modules.json
 ```json
-{ "name": "my-course", "contents": ["module-01", "course.json"] }
+["intro", "chapter-01", "chapter-02"]
 ```
 
-### BrowseResult (API)
+### track.json
 ```json
-{ "path": "/home/user/projects", "entries": [{ "name": "courses" }, ...] }
+[{ "file": "1704067200000.wav", "startTime": 0, "duration": 2.5 }]
 ```
-Only directories are returned (hidden dirs starting with `.` are excluded).
+
+### Audio meta (`.meta.json`)
+```json
+{ "text": "Hello world", "duration": 2.5 }
+```
+
+### BrowseResult
+```json
+{ "path": "/home/user", "entries": [{ "name": "projects" }] }
+```
+Hidden dirs (starting with `.`) are excluded.

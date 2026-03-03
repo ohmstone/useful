@@ -80,8 +80,8 @@ class CourseCard extends HTMLElement {
     this.#render();
   }
 
-  connectedCallback()            { this.#render(); }
-  attributeChangedCallback()     { this.#render(); }
+  connectedCallback()        { this.#render(); }
+  attributeChangedCallback() { this.#render(); }
 
   #render() {
     const { name } = this;
@@ -103,6 +103,14 @@ class CourseCard extends HTMLElement {
         ` : ''}
       </div>
     `;
+
+    this.shadowRoot.querySelector('.card').addEventListener('click', () => {
+      this.dispatchEvent(new CustomEvent('course-open', {
+        detail:   { name: this.name },
+        bubbles:  true,
+        composed: true,
+      }));
+    });
   }
 }
 
