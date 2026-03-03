@@ -187,25 +187,31 @@ Navigation events (all `bubbles: true, composed: true`):
 ### Module editor layout
 
 ```
-┌─ nav bar: [← Back] [Save Slides] [status] ─────────┐
-│                                                     │
-│  ┌─── Slides (textarea) ──┬─── Preview (16:9) ───┐ │
-│  │ === 5                  │  [slide content]      │ │
-│  │ Slide content…         │  ← 1 / 3 →            │ │
-│  └────────────────────────┴───────────────────────┘ │
-│                                                     │
-│  ─── Audio Track ─────────────────────────────────  │
-│  |0s   |5s   |10s  |15s   ...  (scrollable)        │
-│  [clip────] [clip──────]                            │
-│                                                     │
-│  ─── Generated Audio ─────────────────────────────  │
-│  [Text to speak…              ] [Generate]          │
-│  ▶ clip.wav  "hello world"  2.1s  [✕]              │
-└─────────────────────────────────────────────────────┘
+┌─ nav bar: [← Back] [status] [▶ Play] ───────────────┐
+│                                                      │
+│  ┌─── Slides (textarea) ──┬─── Preview (16:9) ────┐ │
+│  │ === 5                  │  [slide content]       │ │
+│  │ Slide content…         │  ← 1 / 3 →             │ │
+│  └────────────────────────┴────────────────────────┘ │
+│                                                      │
+│  ─── Audio Track ──────────────────────────────────  │
+│  |0s   |5s   |10s  |15s   ...  (scrollable)         │
+│  [clip────] [clip──────]      ← time tooltip on hover│
+│                  │ ← sweeping red line during play   │
+│                                                      │
+│  ─── Generated Audio ──────────────────────────────  │
+│  [Text to speak…              ] [Generate]           │
+│  ▶ clip.wav  "hello world"  2.1s  [✎] [✕]          │
+└──────────────────────────────────────────────────────┘
 ```
 
+Slides auto-save 800ms after the last keystroke. Track width is derived from
+total slide duration.
+
 Drag clips from the Generated Audio list onto the Audio Track.
-Click a track clip to remove it.
+Click a track clip once to select it (shows red ✕), click ✕ to delete.
+Clips on the track cannot overlap: drops/moves resolve to before/after the
+conflicting clip; if no valid position exists the action is cancelled.
 
 ### Audio drag-and-drop
 
@@ -228,11 +234,24 @@ Click a track clip to remove it.
 
 - Inline editor shown below a clip when the Edit (✎) button is clicked in `<audio-library>`
 - Fetches WAV, decodes via Web Audio API (`AudioContext.decodeAudioData`)
-- Draws waveform on canvas; click+drag to select a region
-- Cut: removes selected samples (new shorter buffer); Silence: zeroes selected samples
+- Draws waveform on canvas; click to set a marker, click+drag to select a region
+- **▶ Play**: re-encodes current buffer as a blob URL, plays it with a red sweeping cursor on the waveform
+- **Cut**: removes selected region (requires a range selection)
+- **Insert Silence**: inserts 1 second of silence at the marker / selection start — expands the audio
 - Save: encodes modified buffer to 16-bit PCM WAV, PUTs to `/api/audio/:course/:module/:file`
   Server recalculates duration from the new WAV and updates the `.meta.json`
 - Dispatches `audio-edited { file, duration }` on save; `audio-editor-close` on ×
+
+### Audio track (`<audio-track>`)
+
+- `set totalDuration(secs)`: updates ruler and track width without full re-render
+- `set playTime(secs)`: moves a red vertical line across the track; pass `-1` to hide
+- Clip drops and repositions use `#resolvePosition` to avoid overlap:
+  cursor left-of-center on conflict → try placing before; right-of-center → after;
+  if secondary conflict or out-of-bounds → cancel (drop is ignored)
+- Scroll position is preserved when clips change (`#refreshLane` vs full `#render`)
+- Two-click delete: first click selects a clip (shows red ✕), clicking ✕ deletes it; clicking background deselects
+- Hover tooltip shows time (in seconds) at the cursor position over the track
 
 ---
 

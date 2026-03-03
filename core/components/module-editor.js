@@ -2,7 +2,7 @@
 // Full editing interface for a module.
 //
 // Layout (top-to-bottom):
-//   nav bar  →  back button + save + play + status
+//   nav bar  →  back button + save status + play
 //   top row  →  [slide textarea] | [16:9 slide-preview]
 //   middle   →  <audio-track>
 //   bottom   →  <audio-library>
@@ -44,24 +44,20 @@ const STYLES = `
   }
   .back-btn:hover { color: var(--text); }
 
-  .save-btn, .play-btn {
+  .play-btn {
     display: inline-flex;
     align-items: center;
     padding: 5px 14px;
     border-radius: var(--radius);
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text);
+    border: 1px solid var(--accent-deep);
+    background: var(--accent-deep);
+    color: #fff;
     font-size: 12px;
     font-family: var(--font);
     cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
+    margin-left: auto;
+    transition: background 0.15s, border-color 0.15s;
   }
-  .save-btn { margin-left: auto; }
-  .save-btn:hover { border-color: var(--accent); background: var(--surface-raised); }
-  .save-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  .play-btn { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
   .play-btn:hover { background: var(--accent); border-color: var(--accent); }
   .play-btn.playing { background: var(--danger); border-color: var(--danger); }
 
@@ -111,7 +107,7 @@ const STYLES = `
     border-radius: var(--radius);
     padding: 12px 14px;
     color: var(--text);
-    font-size: 13px;
+    font-size: 15px;
     font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
     line-height: 1.7;
     resize: vertical;
@@ -148,11 +144,11 @@ class ModuleEditor extends HTMLElement {
   #saveTimer  = null;
 
   // Playback state
-  #playing     = false;
-  #playRaf     = null;
+  #playing      = false;
+  #playRaf      = null;
   #playTimeouts = [];
-  #playAudios  = [];
-  #playStart   = 0;
+  #playAudios   = [];
+  #playStart    = 0;
 
   get course() { return this.getAttribute('course') ?? ''; }
   get module() { return this.getAttribute('module') ?? ''; }
@@ -177,9 +173,9 @@ class ModuleEditor extends HTMLElement {
     this.#render();
   }
 
-  async #save() {
-    const btn = this.shadowRoot.querySelector('#btn-save');
-    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  async #autoSave() {
+    const statusEl = this.shadowRoot?.querySelector('#save-status');
+    if (statusEl) statusEl.textContent = 'Saving…';
     try {
       await fetch(`/api/slides/${enc(this.course)}/${enc(this.module)}`, {
         method:  'PUT',
@@ -190,25 +186,37 @@ class ModuleEditor extends HTMLElement {
     } catch {
       this.#saveStatus = 'Save failed';
     }
-    if (btn) { btn.disabled = false; btn.textContent = 'Save Slides'; }
-    const statusEl = this.shadowRoot.querySelector('#save-status');
-    if (statusEl) statusEl.textContent = this.#saveStatus;
+    const el = this.shadowRoot?.querySelector('#save-status');
+    if (el) el.textContent = this.#saveStatus;
     clearTimeout(this.#saveTimer);
     this.#saveTimer = setTimeout(() => {
       this.#saveStatus = '';
-      const el = this.shadowRoot.querySelector('#save-status');
+      const el = this.shadowRoot?.querySelector('#save-status');
       if (el) el.textContent = '';
     }, 2500);
+  }
+
+  #scheduleAutoSave() {
+    clearTimeout(this.#saveTimer);
+    const statusEl = this.shadowRoot?.querySelector('#save-status');
+    if (statusEl) statusEl.textContent = '●';
+    this.#saveTimer = setTimeout(() => this.#autoSave(), 800);
+  }
+
+  #updateTrackDuration(slides) {
+    const total = slides.reduce((sum, s) => sum + s.duration, 0);
+    const track = this.shadowRoot?.querySelector('#track');
+    if (track) track.totalDuration = total || 60;
   }
 
   async #play() {
     const slides = parseSlides(this.#slides);
     if (slides.length === 0) return;
 
-    const res = await fetch(`/api/track/${enc(this.course)}/${enc(this.module)}`);
+    const res   = await fetch(`/api/track/${enc(this.course)}/${enc(this.module)}`);
     const clips = await res.json().catch(() => []);
 
-    this.#playing  = true;
+    this.#playing   = true;
     this.#playStart = performance.now();
     this.#updatePlayBtn();
 
@@ -222,24 +230,25 @@ class ModuleEditor extends HTMLElement {
       }, clip.startTime * 1000);
     });
 
-    // Calculate total slide duration
     const totalDuration = slides.reduce((sum, s) => sum + s.duration, 0);
-
     const preview = this.shadowRoot.querySelector('#preview');
+    const track   = this.shadowRoot.querySelector('#track');
+
     const tick = () => {
       if (!this.#playing) return;
       const elapsed = (performance.now() - this.#playStart) / 1000;
       if (elapsed >= totalDuration) { this.#stop(); return; }
 
       // Find current slide index
-      let acc = 0;
-      let idx = 0;
+      let acc = 0, idx = 0;
       for (let i = 0; i < slides.length; i++) {
         acc += slides[i].duration;
         if (elapsed < acc) { idx = i; break; }
         idx = i;
       }
       if (preview) preview.currentIndex = idx;
+      if (track)   track.playTime = elapsed;
+
       this.#playRaf = requestAnimationFrame(tick);
     };
     this.#playRaf = requestAnimationFrame(tick);
@@ -254,11 +263,13 @@ class ModuleEditor extends HTMLElement {
     this.#playAudios.forEach(a => { try { a.pause(); } catch {} });
     this.#playTimeouts = [];
     this.#playAudios  = [];
+    const track = this.shadowRoot?.querySelector('#track');
+    if (track) track.playTime = -1;
     this.#updatePlayBtn();
   }
 
   #updatePlayBtn() {
-    const btn = this.shadowRoot.querySelector('#btn-play');
+    const btn = this.shadowRoot?.querySelector('#btn-play');
     if (!btn) return;
     btn.textContent = this.#playing ? '⏹ Stop' : '▶ Play';
     btn.classList.toggle('playing', this.#playing);
@@ -277,9 +288,8 @@ class ModuleEditor extends HTMLElement {
 
       <div class="editor-nav">
         <button class="back-btn" id="btn-back">← Back</button>
-        <button class="save-btn" id="btn-save">Save Slides</button>
-        <button class="play-btn" id="btn-play">▶ Play</button>
         <span class="save-status" id="save-status">${esc(this.#saveStatus)}</span>
+        <button class="play-btn" id="btn-play">▶ Play</button>
       </div>
 
       <div class="body">
@@ -317,19 +327,22 @@ class ModuleEditor extends HTMLElement {
       </div>
     `;
 
-    // Initial slide parse → preview
+    // Initial slide parse → preview + track duration
     const preview = sr.querySelector('#preview');
-    preview.slides = parseSlides(this.#slides);
+    const slides  = parseSlides(this.#slides);
+    preview.slides = slides;
+    // Set track duration after it has connected
+    requestAnimationFrame(() => this.#updateTrackDuration(slides));
 
-    // Live update preview as user types
+    // Live update: preview, track duration, auto-save
     const ta = sr.querySelector('#slides-ta');
     ta.addEventListener('input', () => {
-      this.#slides   = ta.value;
-      preview.slides = parseSlides(this.#slides);
+      this.#slides = ta.value;
+      const parsed = parseSlides(this.#slides);
+      preview.slides = parsed;
+      this.#updateTrackDuration(parsed);
+      this.#scheduleAutoSave();
     });
-
-    // Save button
-    sr.querySelector('#btn-save').addEventListener('click', () => this.#save());
 
     // Play button
     sr.querySelector('#btn-play').addEventListener('click', () => {

@@ -3,9 +3,10 @@
 //
 // Features:
 //   - Waveform visualization (canvas)
-//   - Click + drag to select a region
+//   - Play with sweeping cursor line
+//   - Click + drag to select a region (or click to set marker)
 //   - Cut: removes the selected region
-//   - Silence: zeroes out the selected region
+//   - Insert Silence: inserts 1s of silence at the marker/selection start
 //   - Save: PUT /api/audio/:course/:module/:file with new WAV data
 //
 // Dispatches (bubbles, composed):
@@ -74,6 +75,15 @@ const STYLES = `
     border-right: 1px solid var(--accent);
     pointer-events: none;
   }
+  .marker-line {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    width: 1px;
+    background: var(--accent);
+    pointer-events: none;
+    display: none;
+  }
 
   /* Tools row */
   .tools {
@@ -103,6 +113,12 @@ const STYLES = `
 
   .btn-danger { border-color: var(--danger); color: var(--danger); }
   .btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.1); }
+
+  .btn-play-audio {
+    padding: 6px 10px;
+    min-width: 32px;
+    justify-content: center;
+  }
 
   .sel-info {
     font-size: 11px;
@@ -169,7 +185,9 @@ function cutRegion(buffer, startSec, endSec) {
   const s1      = Math.min(Math.round(endSec * sr), buffer.length);
   const newLen  = buffer.length - (s1 - s0);
   if (newLen <= 0) return null;
-  const newBuf  = new AudioContext().createBuffer(buffer.numberOfChannels, newLen, sr);
+  const ctx    = new AudioContext();
+  const newBuf = ctx.createBuffer(buffer.numberOfChannels, newLen, sr);
+  ctx.close();
   for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
     const src = buffer.getChannelData(ch);
     const dst = newBuf.getChannelData(ch);
@@ -179,18 +197,20 @@ function cutRegion(buffer, startSec, endSec) {
   return newBuf;
 }
 
-function silenceRegion(buffer, startSec, endSec) {
-  const sr  = buffer.sampleRate;
-  const s0  = Math.round(startSec * sr);
-  const s1  = Math.min(Math.round(endSec * sr), buffer.length);
-  const ctx = new AudioContext();
-  const newBuf = ctx.createBuffer(buffer.numberOfChannels, buffer.length, sr);
+function insertSilenceAt(buffer, atSec, silenceSecs = 1) {
+  const sr     = buffer.sampleRate;
+  const s0     = Math.round(atSec * sr);
+  const silLen = Math.round(silenceSecs * sr);
+  const newLen = buffer.length + silLen;
+  const ctx    = new AudioContext();
+  const newBuf = ctx.createBuffer(buffer.numberOfChannels, newLen, sr);
   ctx.close();
   for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
     const src = buffer.getChannelData(ch);
     const dst = newBuf.getChannelData(ch);
-    dst.set(src);
-    for (let i = s0; i < s1; i++) dst[i] = 0;
+    dst.set(src.subarray(0, s0), 0);           // before marker
+    // silence fills s0..s0+silLen automatically (Float32Array is zero-init)
+    dst.set(src.subarray(s0), s0 + silLen);    // after marker
   }
   return newBuf;
 }
@@ -207,6 +227,12 @@ class AudioEditor extends HTMLElement {
   #selEnd   = null;
   #dragging = false;
 
+  // Playback
+  #playAudio = null;
+  #playRaf   = null;
+  #playing   = false;
+  #playStart = 0;
+
   get file()   { return this.getAttribute('file') ?? ''; }
   get course() { return this.getAttribute('course') ?? ''; }
   get module() { return this.getAttribute('module') ?? ''; }
@@ -220,6 +246,7 @@ class AudioEditor extends HTMLElement {
   attributeChangedCallback() { if (this.isConnected) this.#load(); }
 
   async #load() {
+    this.#stopPlay();
     this.#loading = true;
     this.#error   = null;
     this.#buffer  = null;
@@ -240,7 +267,7 @@ class AudioEditor extends HTMLElement {
     this.#render();
   }
 
-  #drawWaveform() {
+  #drawWaveform(cursorFrac = -1) {
     const canvas = this.shadowRoot.querySelector('canvas');
     if (!canvas || !this.#buffer) return;
     const W  = canvas.width;
@@ -261,22 +288,44 @@ class AudioEditor extends HTMLElement {
       const h = max * mid;
       cx.fillRect(x, mid - h, 1, h * 2 || 1);
     }
+
+    // Playback cursor
+    if (cursorFrac >= 0 && cursorFrac <= 1) {
+      cx.fillStyle = 'rgba(248, 113, 113, 0.9)';
+      cx.fillRect(Math.round(cursorFrac * W), 0, 2, H);
+    }
   }
 
   #renderSelection() {
-    const wrap = this.shadowRoot.querySelector('.canvas-wrap');
+    const wrap    = this.shadowRoot.querySelector('.canvas-wrap');
     const overlay = this.shadowRoot.querySelector('.selection-overlay');
-    if (!wrap || !overlay) return;
-    if (this.#selStart === null || this.#selEnd === null) {
+    const marker  = this.shadowRoot.querySelector('.marker-line');
+    if (!wrap || !overlay || !marker) return;
+
+    const hasRange = this.#selStart !== null && this.#selEnd !== null
+      && Math.abs(this.#selEnd - this.#selStart) > 0.001;
+    const hasCursor = this.#selStart !== null;
+
+    if (!hasCursor) {
       overlay.style.display = 'none';
+      marker.style.display  = 'none';
       return;
     }
-    const l = Math.min(this.#selStart, this.#selEnd);
-    const r = Math.max(this.#selStart, this.#selEnd);
+
     const W = wrap.getBoundingClientRect().width;
-    overlay.style.display = 'block';
-    overlay.style.left  = `${l * W}px`;
-    overlay.style.width = `${(r - l) * W}px`;
+
+    if (hasRange) {
+      const l = Math.min(this.#selStart, this.#selEnd);
+      const r = Math.max(this.#selStart, this.#selEnd);
+      overlay.style.display = 'block';
+      overlay.style.left  = `${l * W}px`;
+      overlay.style.width = `${(r - l) * W}px`;
+      marker.style.display = 'none';
+    } else {
+      overlay.style.display = 'none';
+      marker.style.display = 'block';
+      marker.style.left = `${this.#selStart * W}px`;
+    }
   }
 
   #selDuration() {
@@ -284,13 +333,27 @@ class AudioEditor extends HTMLElement {
     return Math.abs(this.#selEnd - this.#selStart) * this.#buffer.duration;
   }
 
+  #markerTimeSec() {
+    if (this.#selStart === null || !this.#buffer) return null;
+    return Math.min(this.#selStart, this.#selEnd ?? this.#selStart) * this.#buffer.duration;
+  }
+
   async #applyEdit(op) {
     if (!this.#buffer) return;
-    if (this.#selStart === null || this.#selEnd === null) return;
-    const d   = this.#buffer.duration;
-    const l   = Math.min(this.#selStart, this.#selEnd) * d;
-    const r   = Math.max(this.#selStart, this.#selEnd) * d;
-    const newBuf = op === 'cut' ? cutRegion(this.#buffer, l, r) : silenceRegion(this.#buffer, l, r);
+    if (this.#selStart === null) return;
+    this.#stopPlay();
+
+    const d = this.#buffer.duration;
+    const l = Math.min(this.#selStart, this.#selEnd ?? this.#selStart) * d;
+    const r = Math.max(this.#selStart, this.#selEnd ?? this.#selStart) * d;
+
+    let newBuf;
+    if (op === 'cut') {
+      if (Math.abs(r - l) < 0.001) return;
+      newBuf = cutRegion(this.#buffer, l, r);
+    } else if (op === 'insert-silence') {
+      newBuf = insertSilenceAt(this.#buffer, l, 1.0);
+    }
     if (!newBuf) return;
     this.#buffer   = newBuf;
     this.#selStart = null;
@@ -322,13 +385,66 @@ class AudioEditor extends HTMLElement {
     }
   }
 
+  // ── Playback ────────────────────────────────────────────────────────────────
+
+  #startPlay() {
+    if (!this.#buffer) return;
+    if (this.#playing) { this.#stopPlay(); return; }
+
+    const wavData = encodeWav(this.#buffer);
+    const blob    = new Blob([wavData], { type: 'audio/wav' });
+    const url     = URL.createObjectURL(blob);
+    this.#playAudio  = new Audio(url);
+    this.#playStart  = performance.now();
+    this.#playing    = true;
+
+    this.#playAudio.play().catch(() => this.#stopPlay());
+    this.#playAudio.addEventListener('ended', () => this.#stopPlay());
+
+    const tick = () => {
+      if (!this.#playing) return;
+      const elapsed  = (performance.now() - this.#playStart) / 1000;
+      const fraction = Math.min(elapsed / this.#buffer.duration, 1);
+      this.#drawWaveform(fraction);
+      this.#playRaf = requestAnimationFrame(tick);
+    };
+    this.#playRaf = requestAnimationFrame(tick);
+    this.#updatePlayBtn();
+  }
+
+  #stopPlay() {
+    if (!this.#playing && !this.#playRaf) return;
+    this.#playing = false;
+    if (this.#playAudio) { this.#playAudio.pause(); this.#playAudio = null; }
+    cancelAnimationFrame(this.#playRaf);
+    this.#playRaf = null;
+    // Redraw without cursor (deferred since canvas may not exist yet)
+    requestAnimationFrame(() => this.#drawWaveform());
+    this.#updatePlayBtn();
+  }
+
+  #updatePlayBtn() {
+    const btn = this.shadowRoot?.querySelector('#btn-play-audio');
+    if (btn) btn.textContent = this.#playing ? '⏹' : '▶';
+  }
+
+  // ── ────────────────────────────────────────────────────────────────────────
+
   #close() {
+    this.#stopPlay();
     this.dispatchEvent(new CustomEvent('audio-editor-close', { bubbles: true, composed: true }));
   }
 
   #render() {
     const sr = this.shadowRoot;
-    const selDur = this.#selDuration();
+    const hasRange  = this.#selStart !== null && this.#selEnd !== null
+      && Math.abs(this.#selEnd - this.#selStart) > 0.001;
+    const hasCursor = this.#selStart !== null;
+    const selDur    = this.#selDuration();
+
+    let selInfoText = 'Click to set marker, drag to select';
+    if (hasRange) selInfoText = `${selDur.toFixed(2)}s selected`;
+    else if (hasCursor) selInfoText = `Marker at ${(this.#markerTimeSec() ?? 0).toFixed(2)}s`;
 
     sr.innerHTML = `
       <style>${STYLES}</style>
@@ -346,11 +462,13 @@ class AudioEditor extends HTMLElement {
             <div class="canvas-wrap" id="canvas-wrap">
               <canvas id="waveform" width="800" height="80"></canvas>
               <div class="selection-overlay" style="display:none"></div>
+              <div class="marker-line" style="display:none"></div>
             </div>
             <div class="tools">
-              <button class="btn btn-danger" id="btn-cut"     ${this.#selStart === null ? 'disabled' : ''}>Cut</button>
-              <button class="btn"            id="btn-silence" ${this.#selStart === null ? 'disabled' : ''}>Silence</button>
-              <span class="sel-info">${this.#selStart !== null ? `${selDur.toFixed(2)}s selected` : 'Click and drag to select'}</span>
+              <button class="btn btn-play-audio" id="btn-play-audio" title="Play">▶</button>
+              <button class="btn btn-danger" id="btn-cut" ${!hasRange ? 'disabled' : ''}>Cut</button>
+              <button class="btn" id="btn-insert-silence" ${!hasCursor ? 'disabled' : ''}>Insert Silence</button>
+              <span class="sel-info">${selInfoText}</span>
               <button class="btn btn-primary" id="btn-save">Save</button>
               <span class="status-msg" id="status"></span>
             </div>
@@ -391,21 +509,29 @@ class AudioEditor extends HTMLElement {
     wrap.addEventListener('mouseup', endDrag);
     wrap.addEventListener('mouseleave', endDrag);
 
+    sr.querySelector('#btn-play-audio')?.addEventListener('click', () => this.#startPlay());
     sr.querySelector('#btn-cut')?.addEventListener('click', () => this.#applyEdit('cut'));
-    sr.querySelector('#btn-silence')?.addEventListener('click', () => this.#applyEdit('silence'));
+    sr.querySelector('#btn-insert-silence')?.addEventListener('click', () => this.#applyEdit('insert-silence'));
     sr.querySelector('#btn-save')?.addEventListener('click', () => this.#saveAudio());
   }
 
   // Update tool buttons without full re-render
   #updateToolBtns() {
     const sr = this.shadowRoot;
-    const hasSelection = this.#selStart !== null && this.#selEnd !== null
+    const hasRange  = this.#selStart !== null && this.#selEnd !== null
       && Math.abs(this.#selEnd - this.#selStart) > 0.001;
-    const selDur = this.#selDuration();
-    sr.querySelector('#btn-cut')?.toggleAttribute('disabled', !hasSelection);
-    sr.querySelector('#btn-silence')?.toggleAttribute('disabled', !hasSelection);
+    const hasCursor = this.#selStart !== null;
+    const selDur    = this.#selDuration();
+
+    sr.querySelector('#btn-cut')?.toggleAttribute('disabled', !hasRange);
+    sr.querySelector('#btn-insert-silence')?.toggleAttribute('disabled', !hasCursor);
+
     const info = sr.querySelector('.sel-info');
-    if (info) info.textContent = hasSelection ? `${selDur.toFixed(2)}s selected` : 'Click and drag to select';
+    if (info) {
+      if (hasRange) info.textContent = `${selDur.toFixed(2)}s selected`;
+      else if (hasCursor) info.textContent = `Marker at ${(this.#markerTimeSec() ?? 0).toFixed(2)}s`;
+      else info.textContent = 'Click to set marker, drag to select';
+    }
   }
 }
 
