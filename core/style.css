@@ -1,0 +1,52 @@
+/* ─── Theme tokens ─────────────────────────────────────────────────────────── */
+
+:root {
+  --bg:            #111113;
+  --surface:       #1c1c1f;
+  --surface-raised:#252529;
+  --border:        #2e2e34;
+  --text:          #e4e4e7;
+  --text-muted:    #71717a;
+  --text-dim:      #3f3f46;
+  --accent:        #818cf8;
+  --accent-deep:   #4338ca;
+  --danger:        #f87171;
+  --success:       #4ade80;
+  --radius:        6px;
+  --radius-lg:     10px;
+  --font:          'Open Sans', system-ui, -apple-system, sans-serif;
+}
+
+/* ─── Reset ────────────────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 3px; }
+
+/* ─── Shared element defaults (inherited by shadow DOMs via CSS vars) ──────── */
+
+button, input, textarea, select {
+  font-family: var(--font);
+  font-size: 14px;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}

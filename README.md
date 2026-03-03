@@ -31,7 +31,7 @@ The current name was chosen because I want to build something _useful_.
 
 (not exhaustive, actively modified)
 
-- [ ] Server and config setup for running system as a web app
+- [x] Server and config setup for running system as a web app
 - [ ] Web app based configuration and project creation
 - [ ] Rich text editor for fleshing out initial draft course
 - [ ] Tools for converting draft into a structured course
