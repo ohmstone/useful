@@ -2,9 +2,15 @@
 // Lists generated audio clips + TTS generation form.
 // Clips are draggable onto <audio-track>.
 // dataTransfer format: application/json → { file, text, duration }
+// Clips have an Edit button that shows <audio-editor> inline.
 
 const STYLES = `
   :host { display: flex; flex-direction: column; gap: 12px; }
+
+  ::-webkit-scrollbar        { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track  { background: transparent; }
+  ::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
   .section-label {
     font-size: 11px;
@@ -61,7 +67,7 @@ const STYLES = `
     display: flex;
     flex-direction: column;
     gap: 4px;
-    max-height: 180px;
+    max-height: 220px;
     overflow-y: auto;
   }
 
@@ -94,18 +100,19 @@ const STYLES = `
     white-space: nowrap;
   }
 
-  .play-btn, .del-btn {
+  .play-btn, .edit-btn, .del-btn {
     background: none;
     border: none;
     cursor: pointer;
     padding: 2px 4px;
     border-radius: 3px;
-    font-size: 13px;
+    font-size: 12px;
     line-height: 1;
     color: var(--text-muted);
     transition: color 0.1s, background 0.1s;
   }
   .play-btn:hover { color: var(--accent); }
+  .edit-btn:hover { color: var(--text); background: var(--surface-raised); }
   .del-btn:hover  { color: var(--danger); background: rgba(248,113,113,0.1); }
 
   .drag-hint { font-size: 11px; color: var(--text-dim); }
@@ -115,8 +122,9 @@ const STYLES = `
 class AudioLibrary extends HTMLElement {
   static observedAttributes = ['course', 'module'];
 
-  #clips  = [];
-  #audio  = null; // current HTMLAudioElement
+  #clips       = [];
+  #audio       = null; // current HTMLAudioElement
+  #editingFile = null; // file currently open in editor
 
   get course() { return this.getAttribute('course') ?? ''; }
   get module() { return this.getAttribute('module') ?? ''; }
@@ -163,6 +171,7 @@ class AudioLibrary extends HTMLElement {
   async #delete(file) {
     await fetch(`/api/audio/${enc(this.course)}/${enc(this.module)}/${enc(file)}`, { method: 'DELETE' });
     this.#clips = this.#clips.filter(c => c.file !== file);
+    if (this.#editingFile === file) this.#editingFile = null;
     this.#render();
   }
 
@@ -198,8 +207,16 @@ class AudioLibrary extends HTMLElement {
                 <button class="play-btn" data-file="${esc(c.file)}" title="Play">▶</button>
                 <span class="clip-text" title="${esc(c.text ?? c.file)}">${esc(c.text || c.file)}</span>
                 <span class="clip-duration">${(c.duration ?? 0).toFixed(1)}s</span>
-                <button class="del-btn" data-file="${esc(c.file)}" title="Delete">✕</button>
+                <button class="edit-btn" data-file="${esc(c.file)}" title="Edit">✎</button>
+                <button class="del-btn"  data-file="${esc(c.file)}" title="Delete">✕</button>
               </div>
+              ${this.#editingFile === c.file ? `
+                <audio-editor
+                  file="${esc(c.file)}"
+                  course="${esc(this.course)}"
+                  module="${esc(this.module)}">
+                </audio-editor>
+              ` : ''}
             `).join('')}
       </div>
       ${this.#clips.length ? `<div class="drag-hint">Drag clips onto the track above</div>` : ''}
@@ -223,6 +240,15 @@ class AudioLibrary extends HTMLElement {
       });
     });
 
+    // Edit buttons — toggle inline editor
+    sr.querySelectorAll('.edit-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.#editingFile = this.#editingFile === btn.dataset.file ? null : btn.dataset.file;
+        this.#render();
+      });
+    });
+
     // Delete buttons
     sr.querySelectorAll('.del-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -230,6 +256,21 @@ class AudioLibrary extends HTMLElement {
         this.#delete(btn.dataset.file);
       });
     });
+
+    // Audio editor events
+    const editor = sr.querySelector('audio-editor');
+    if (editor) {
+      editor.addEventListener('audio-edited', (e) => {
+        const { file, duration } = e.detail;
+        this.#clips = this.#clips.map(c => c.file === file ? { ...c, duration } : c);
+        this.#editingFile = null;
+        this.#render();
+      });
+      editor.addEventListener('audio-editor-close', () => {
+        this.#editingFile = null;
+        this.#render();
+      });
+    }
 
     // Drag-and-drop: set transfer data
     sr.querySelectorAll('.clip[draggable]').forEach(el => {

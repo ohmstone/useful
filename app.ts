@@ -202,6 +202,13 @@ async function handle(req: Request): Promise<Response> {
       return Response.json(await readModules(pd, course));
     }
 
+    if (method === "PUT") {
+      const names = await req.json() as string[];
+      if (!Array.isArray(names)) return Response.json({ error: "Expected array" }, { status: 400 });
+      await writeModules(pd, course, names);
+      return new Response(null, { status: 204 });
+    }
+
     if (method === "POST") {
       const { name } = await req.json() as { name?: string };
       const moduleName = name?.trim() ?? "";
@@ -281,6 +288,23 @@ async function handle(req: Request): Promise<Response> {
         const data = await Deno.readFile(`${aDir}/${file}`);
         return new Response(data, { headers: { "Content-Type": "audio/wav" } });
       } catch { return new Response("Not Found", { status: 404 }); }
+    }
+
+    // PUT /api/audio/:course/:module/:file — replace WAV (from audio editor)
+    if (seg.length === 5 && method === "PUT") {
+      const file = decodeURIComponent(seg[4]);
+      if (file.includes("..") || file.includes("/")) return new Response("Forbidden", { status: 403 });
+      const wavPath = `${aDir}/${file}`;
+      const data = new Uint8Array(await req.arrayBuffer());
+      await Deno.writeFile(wavPath, data);
+      const duration = await wavDuration(wavPath);
+      const metaPath = `${aDir}/${file.replace(/\.wav$/, ".meta.json")}`;
+      try {
+        const meta: AudioMeta = JSON.parse(await Deno.readTextFile(metaPath));
+        meta.duration = duration;
+        await Deno.writeTextFile(metaPath, JSON.stringify(meta, null, 2));
+      } catch { /* no meta to update */ }
+      return Response.json({ duration });
     }
 
     // DELETE /api/audio/:course/:module/:file

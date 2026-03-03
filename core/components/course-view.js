@@ -1,5 +1,6 @@
 // <course-view course="..."> — shows the ordered module list for a course.
 // Each module card dispatches 'module-open' (bubbles, composed) when clicked.
+// Modules can be reordered by dragging; order is persisted via PUT /api/modules/:course.
 
 const STYLES = `
   :host { display: block; }
@@ -57,7 +58,7 @@ const STYLES = `
   .module-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 4px;
   }
 
   .module-card {
@@ -66,6 +67,7 @@ const STYLES = `
     justify-content: space-between;
     background: var(--surface);
     border: 1px solid var(--border);
+    border-top: 2px solid transparent;
     border-radius: var(--radius-lg);
     padding: 14px 18px;
     cursor: pointer;
@@ -73,6 +75,19 @@ const STYLES = `
     user-select: none;
   }
   .module-card:hover { border-color: var(--accent-deep); background: var(--surface-raised); }
+  .module-card.drag-over { border-top-color: var(--accent); }
+  .module-card.dragging  { opacity: 0.4; }
+
+  .module-left { display: flex; align-items: center; gap: 12px; }
+  .drag-handle {
+    color: var(--text-dim);
+    font-size: 14px;
+    cursor: grab;
+    padding: 2px 4px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .drag-handle:active { cursor: grabbing; }
 
   .module-name { font-size: 14px; font-weight: 600; color: var(--text); }
   .module-idx  { font-size: 12px; color: var(--text-dim); }
@@ -118,6 +133,8 @@ class CourseView extends HTMLElement {
   #loading  = true;
   #creating = false;
   #error    = null;
+  #dragIdx  = null;
+  #dropIdx  = null;
 
   get course() { return this.getAttribute('course') ?? ''; }
 
@@ -143,6 +160,14 @@ class CourseView extends HTMLElement {
     }
     this.#loading = false;
     this.#render();
+  }
+
+  async #saveOrder() {
+    await fetch(`/api/modules/${enc(this.course)}`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(this.#modules),
+    });
   }
 
   #render() {
@@ -179,10 +204,13 @@ class CourseView extends HTMLElement {
           ${this.#modules.length === 0
             ? `<p class="state-msg">No modules yet — create your first one.</p>`
             : this.#modules.map((m, i) => `
-                <div class="module-card" data-name="${esc(m)}">
-                  <div>
-                    <div class="module-idx">${i + 1}</div>
-                    <div class="module-name">${esc(m)}</div>
+                <div class="module-card" data-name="${esc(m)}" data-idx="${i}" draggable="true">
+                  <div class="module-left">
+                    <span class="drag-handle" title="Drag to reorder">⠿</span>
+                    <div>
+                      <div class="module-idx">${i + 1}</div>
+                      <div class="module-name">${esc(m)}</div>
+                    </div>
                   </div>
                   <span class="module-arrow">›</span>
                 </div>
@@ -230,13 +258,61 @@ class CourseView extends HTMLElement {
       }
     });
 
+    // Click to open (not on drag handle)
     sr.querySelectorAll('.module-card').forEach(el => {
-      el.addEventListener('click', () => {
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('.drag-handle')) return;
         this.dispatchEvent(new CustomEvent('module-open', {
           detail:   { course: this.course, name: el.dataset.name },
           bubbles:  true,
           composed: true,
         }));
+      });
+    });
+
+    // Drag-to-reorder
+    sr.querySelectorAll('.module-card').forEach(el => {
+      el.addEventListener('dragstart', (e) => {
+        this.#dragIdx = parseInt(el.dataset.idx);
+        el.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', el.dataset.idx);
+      });
+
+      el.addEventListener('dragend', () => {
+        this.#dragIdx = null;
+        this.#dropIdx = null;
+        sr.querySelectorAll('.module-card').forEach(c => c.classList.remove('drag-over', 'dragging'));
+      });
+
+      el.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const idx = parseInt(el.dataset.idx);
+        if (idx !== this.#dropIdx) {
+          this.#dropIdx = idx;
+          sr.querySelectorAll('.module-card').forEach(c => {
+            const i = parseInt(c.dataset.idx);
+            c.classList.toggle('drag-over', i === idx && i !== this.#dragIdx);
+          });
+        }
+      });
+
+      el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+
+      el.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const from = this.#dragIdx;
+        const to   = parseInt(el.dataset.idx);
+        if (from === null || from === to) return;
+        const mods = [...this.#modules];
+        const [item] = mods.splice(from, 1);
+        mods.splice(to, 0, item);
+        this.#modules = mods;
+        this.#dragIdx = null;
+        this.#dropIdx = null;
+        this.#render();
+        this.#saveOrder();
       });
     });
   }

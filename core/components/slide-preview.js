@@ -97,6 +97,11 @@ class SlidePreview extends HTMLElement {
     this.#render();
   }
 
+  set currentIndex(val) {
+    const idx = Math.max(0, Math.min(Math.floor(val), this.#slides.length - 1));
+    if (idx !== this.#index) { this.#index = idx; this.#render(); }
+  }
+
   connectedCallback() { this.#render(); }
 
   #render() {

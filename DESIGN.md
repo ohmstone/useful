@@ -40,14 +40,15 @@ core/
   tts                           # TTS binary (call: tts -wav <out>.wav "<text>")
   components/
     course-card.js              # <course-card>    — displays one course; dispatches course-open
-    course-list.js              # <course-list>    — course grid + new-course form
-    course-view.js              # <course-view>    — ordered module list for a course
+    course-list.js              # <course-list>    — course grid + search + new-course form
+    course-view.js              # <course-view>    — ordered module list; drag-to-reorder
     dir-browser.js              # <dir-browser>    — filesystem navigator
     dir-picker.js               # <dir-picker>     — first-run setup shell
     slide-preview.js            # <slide-preview>  — 16:9 slide display + nav; exports parseSlides()
-    audio-track.js              # <audio-track>    — horizontal timeline; accepts drops
-    audio-library.js            # <audio-library>  — TTS generation + clip list; clips are draggable
-    module-editor.js            # <module-editor>  — full editing view; imports parseSlides
+    audio-track.js              # <audio-track>    — horizontal timeline; clips draggable to reposition
+    audio-editor.js             # <audio-editor>   — waveform editor; cut/silence regions; saves WAV
+    audio-library.js            # <audio-library>  — TTS generation + clip list; Edit opens audio-editor
+    module-editor.js            # <module-editor>  — full editing view; imports parseSlides; playback
     app-root.js                 # <app-root>       — top-level shell, state + nav machine
 .config/                        # Auto-created next to app.ts (or --config path)
   config.json                   # { "projectDir": string | null }
@@ -114,6 +115,7 @@ cwd is set to `core/` so TTS can find its data files. Needs `--allow-run`.
 | GET | `/api/browse?path=` | — | `BrowseResult` | List subdirs (default `$HOME`) |
 | POST | `/api/mkdir` | `{ parent, name }` | `{ path }` | Create subdir |
 | GET | `/api/modules/:course` | — | `string[]` | Ordered module list |
+| PUT | `/api/modules/:course` | `string[]` | 204 | Reorder modules |
 | POST | `/api/modules/:course` | `{ name }` | `{ name }` | Create module (dir + scaffolding) |
 | GET | `/api/slides/:course/:module` | — | `text/plain` | Get slides.txt content |
 | PUT | `/api/slides/:course/:module` | `text/plain` | 204 | Save slides.txt |
@@ -122,6 +124,7 @@ cwd is set to `core/` so TTS can find its data files. Needs `--allow-run`.
 | GET | `/api/audio/:course/:module` | — | `AudioMeta[]` | List generated audio |
 | POST | `/api/audio/:course/:module` | `{ text }` | `AudioMeta` | Generate audio via TTS |
 | GET | `/api/audio/:course/:module/:file` | — | `audio/wav` | Serve WAV file |
+| PUT | `/api/audio/:course/:module/:file` | `audio/wav` | `{ duration }` | Replace WAV (from editor) |
 | DELETE | `/api/audio/:course/:module/:file` | — | 204 | Delete WAV + meta |
 
 ### Static file serving
@@ -209,7 +212,27 @@ Click a track clip to remove it.
 - `<audio-library>` sets `draggable="true"` on clip rows
 - `dragstart`: `dataTransfer.setData('application/json', { file, text, duration })`
 - `<audio-track>` listens for `dragover`/`drop` on its wrapper element
-- On drop: calculates `startTime = dropX / PX_PER_SEC` (40 px/s), adds clip, auto-saves
+- On drop from library: calculates `startTime = dropX / PX_PER_SEC` (40 px/s), adds clip, auto-saves
+- Clips already on the track are also draggable (internal move): uses `x-clip-move` dataTransfer key
+  with `{ id, offsetX }` to reposition by drag
+
+### Module playback
+
+- Play button in `<module-editor>` nav bar
+- On play: fetches track clips from API, parses slides, uses `requestAnimationFrame` loop to
+  advance slide index and `setTimeout` to schedule audio clips at their `startTime`
+- `<slide-preview>` exposes `set currentIndex(val)` for programmatic control during playback
+- Stop button cancels RAF, clears timeouts, pauses all audio
+
+### Audio editing (`<audio-editor>`)
+
+- Inline editor shown below a clip when the Edit (✎) button is clicked in `<audio-library>`
+- Fetches WAV, decodes via Web Audio API (`AudioContext.decodeAudioData`)
+- Draws waveform on canvas; click+drag to select a region
+- Cut: removes selected samples (new shorter buffer); Silence: zeroes selected samples
+- Save: encodes modified buffer to 16-bit PCM WAV, PUTs to `/api/audio/:course/:module/:file`
+  Server recalculates duration from the new WAV and updates the `.meta.json`
+- Dispatches `audio-edited { file, duration }` on save; `audio-editor-close` on ×
 
 ---
 

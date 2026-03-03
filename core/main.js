@@ -7,6 +7,7 @@ import './components/dir-picker.js';
 import './components/course-view.js';
 import './components/slide-preview.js';
 import './components/audio-track.js';
+import './components/audio-editor.js';
 import './components/audio-library.js';
 import './components/module-editor.js';
 import './components/app-root.js';

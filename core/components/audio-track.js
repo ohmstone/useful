@@ -1,6 +1,7 @@
 // <audio-track course="..." module="...">
 // Horizontal timeline. Accepts drops from <audio-library>.
-// Clips can be clicked to remove. Persists to /api/track/:course/:module.
+// Clips can be dragged to reposition or clicked to remove.
+// Persists to /api/track/:course/:module.
 //
 // Scale: PX_PER_SEC pixels per second. Track is scrollable horizontally.
 
@@ -10,6 +11,11 @@ const RULER_STEP  = 5;    // ruler tick every N seconds
 
 const STYLES = `
   :host { display: flex; flex-direction: column; gap: 8px; }
+
+  ::-webkit-scrollbar        { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track  { background: transparent; }
+  ::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
   .section-label {
     font-size: 11px;
@@ -92,11 +98,14 @@ const STYLES = `
     gap: 6px;
     overflow: hidden;
     min-width: 40px;
-    cursor: pointer;
+    cursor: grab;
     transition: background 0.1s;
     box-sizing: border-box;
+    user-select: none;
   }
-  .clip:hover { background: var(--accent); }
+  .clip:active { cursor: grabbing; }
+  .clip:hover  { background: var(--accent); }
+  .clip.dragging { opacity: 0.4; }
 
   .clip-name {
     font-size: 11px;
@@ -105,12 +114,14 @@ const STYLES = `
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
+    pointer-events: none;
   }
   .clip-del {
     font-size: 11px;
     color: rgba(255,255,255,0.6);
     flex-shrink: 0;
     line-height: 1;
+    pointer-events: none;
   }
 
   .drop-hint {
@@ -151,7 +162,6 @@ class AudioTrack extends HTMLElement {
   }
 
   async #save() {
-    // Strip internal id before saving
     const payload = this.#clips.map(({ file, startTime, duration }) => ({ file, startTime, duration }));
     await fetch(`/api/track/${enc(this.course)}/${enc(this.module)}`, {
       method:  'PUT',
@@ -162,6 +172,13 @@ class AudioTrack extends HTMLElement {
 
   #removeClip(id) {
     this.#clips = this.#clips.filter(c => c.id !== id);
+    this.#render();
+    this.#save();
+  }
+
+  #moveClip(id, newStartTime) {
+    newStartTime = Math.max(0, Math.round(newStartTime * 10) / 10);
+    this.#clips = this.#clips.map(c => c.id === id ? { ...c, startTime: newStartTime } : c);
     this.#render();
     this.#save();
   }
@@ -204,7 +221,8 @@ class AudioTrack extends HTMLElement {
               return `
                 <div class="clip" data-id="${esc(c.id)}"
                      style="left:${left}px; width:${width}px"
-                     title="${esc(c.file)} @ ${c.startTime.toFixed(1)}s — click to remove">
+                     draggable="true"
+                     title="${esc(c.file)} @ ${c.startTime.toFixed(1)}s — drag to move, click ✕ to remove">
                   <span class="clip-name">${esc(label)}</span>
                   <span class="clip-del">✕</span>
                 </div>
@@ -217,18 +235,40 @@ class AudioTrack extends HTMLElement {
       </div>
     `;
 
-    // Remove clip on click
-    sr.querySelectorAll('.clip').forEach(el => {
-      el.addEventListener('click', () => this.#removeClip(el.dataset.id));
-    });
-
-    // Drag-and-drop target
     const wrap = sr.querySelector('#track-wrap');
 
+    // Click ✕ to remove (only if not a drag)
+    sr.querySelectorAll('.clip').forEach(el => {
+      let didDrag = false;
+
+      el.addEventListener('dragstart', (e) => {
+        didDrag = true;
+        el.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        // Store clip id + grab offset within the clip
+        e.dataTransfer.setData('x-clip-move', JSON.stringify({
+          id:      el.dataset.id,
+          offsetX: e.clientX - el.getBoundingClientRect().left,
+        }));
+      });
+
+      el.addEventListener('dragend', () => {
+        el.classList.remove('dragging');
+        setTimeout(() => { didDrag = false; }, 50);
+      });
+
+      el.addEventListener('click', (e) => {
+        if (didDrag) return;
+        this.#removeClip(el.dataset.id);
+      });
+    });
+
+    // Drop target — handles both internal moves and library drops
     wrap.addEventListener('dragover', (e) => {
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'copy';
-      wrap.classList.add('drag-over');
+      const isMove = e.dataTransfer.types.includes('x-clip-move');
+      e.dataTransfer.dropEffect = isMove ? 'move' : 'copy';
+      if (!isMove) wrap.classList.add('drag-over');
     });
 
     wrap.addEventListener('dragleave', () => wrap.classList.remove('drag-over'));
@@ -236,11 +276,24 @@ class AudioTrack extends HTMLElement {
     wrap.addEventListener('drop', (e) => {
       e.preventDefault();
       wrap.classList.remove('drag-over');
+
+      // Internal clip move
+      const moveStr = e.dataTransfer.getData('x-clip-move');
+      if (moveStr) {
+        try {
+          const { id, offsetX } = JSON.parse(moveStr);
+          const rect      = wrap.getBoundingClientRect();
+          const x         = e.clientX - rect.left + wrap.scrollLeft - offsetX;
+          this.#moveClip(id, x / PX_PER_SEC);
+        } catch { /* ignore */ }
+        return;
+      }
+
+      // Library drop (new clip)
       try {
         const data      = JSON.parse(e.dataTransfer.getData('application/json'));
         const rect      = wrap.getBoundingClientRect();
-        const scrollX   = wrap.scrollLeft;
-        const x         = e.clientX - rect.left + scrollX;
+        const x         = e.clientX - rect.left + wrap.scrollLeft;
         const startTime = x / PX_PER_SEC;
         this.#addClip(data.file, startTime, data.duration ?? 3);
       } catch { /* ignore bad drops */ }
