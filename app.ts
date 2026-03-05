@@ -508,6 +508,38 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
+  // ── Inject files  /api/inject[/:file] ───────────────────────────────────
+
+  if (seg[0] === "api" && seg[1] === "inject") {
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    const injectDir = `${pd}/_inject`;
+
+    // GET /api/inject — list .js files
+    if (seg.length === 2 && method === "GET") {
+      const files: string[] = [];
+      try {
+        for await (const e of Deno.readDir(injectDir)) {
+          if (e.isFile && e.name.endsWith(".js")) files.push(e.name);
+        }
+        files.sort();
+      } catch { /* dir may not exist yet */ }
+      return Response.json(files);
+    }
+
+    // GET /api/inject/:file — serve a JS file as an ES module
+    if (seg.length === 3 && method === "GET") {
+      const file = decodeURIComponent(seg[2]);
+      if (file.includes("..") || file.includes("/") || !file.endsWith(".js")) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      try {
+        const data = await Deno.readTextFile(`${injectDir}/${file}`);
+        return new Response(data, { headers: { "Content-Type": "application/javascript; charset=utf-8" } });
+      } catch { return new Response("Not Found", { status: 404 }); }
+    }
+  }
+
   return serveFile(pathname);
 }
 
