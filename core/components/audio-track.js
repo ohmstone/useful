@@ -196,7 +196,7 @@ class AudioTrack extends HTMLElement {
     try {
       const res  = await fetch(`/api/track/${enc(this.course)}/${enc(this.module)}`);
       const data = await res.json();
-      this.#clips = data.map(c => ({ ...c, id: c.id ?? crypto.randomUUID() }));
+      this.#clips = data.map(c => ({ ...c, id: c.id ?? uid() }));
     } catch { this.#clips = []; }
     this.#render();
   }
@@ -257,9 +257,10 @@ class AudioTrack extends HTMLElement {
   }
 
   #addClip(file, rawStart, duration) {
-    const resolved = this.#resolvePosition(null, rawStart, duration, 0.5);
+    const dur = Math.min(Math.max(0, duration || 0), 3600); // sanity cap at 1 hour
+    const resolved = this.#resolvePosition(null, rawStart, dur, 0.5);
     if (resolved === null) return; // cancel
-    this.#clips = [...this.#clips, { id: crypto.randomUUID(), file, startTime: resolved, duration }];
+    this.#clips = [...this.#clips, { id: uid(), file, startTime: resolved, duration: dur }];
     this.#refreshLane();
     this.#save();
   }
@@ -291,7 +292,7 @@ class AudioTrack extends HTMLElement {
     } else {
       lane.innerHTML = this.#clips.map(c => {
         const left  = Math.round(c.startTime * PX_PER_SEC);
-        const width = Math.max(Math.round((c.duration || 3) * PX_PER_SEC), 40);
+        const width = Math.max(Math.round((Math.min(c.duration, 3600) || 3) * PX_PER_SEC), 40);
         const label = c.file.replace(/\.wav$/, '');
         const sel   = this.#selectedId === c.id;
         return `
@@ -389,13 +390,21 @@ class AudioTrack extends HTMLElement {
     });
 
     // Drop target
+    wrap.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      const isMove = e.dataTransfer.types.includes('x-clip-move');
+      if (!isMove) wrap.classList.add('drag-over');
+    });
     wrap.addEventListener('dragover', (e) => {
       e.preventDefault();
       const isMove = e.dataTransfer.types.includes('x-clip-move');
       e.dataTransfer.dropEffect = isMove ? 'move' : 'copy';
       if (!isMove) wrap.classList.add('drag-over');
     });
-    wrap.addEventListener('dragleave', () => wrap.classList.remove('drag-over'));
+    wrap.addEventListener('dragleave', (e) => {
+      // Only remove class when truly leaving wrap (not entering a child)
+      if (!wrap.contains(e.relatedTarget)) wrap.classList.remove('drag-over');
+    });
 
     wrap.addEventListener('drop', (e) => {
       e.preventDefault();
@@ -413,12 +422,14 @@ class AudioTrack extends HTMLElement {
         return;
       }
 
-      try {
-        const data = JSON.parse(e.dataTransfer.getData('application/json'));
+      // Library clip — read from window variable (Chrome drops getData() across shadow roots)
+      const libData = window.__audioDragPayload;
+      window.__audioDragPayload = null;
+      if (libData?.file) {
         const rect = wrap.getBoundingClientRect();
         const x    = e.clientX - rect.left + wrap.scrollLeft;
-        this.#addClip(data.file, x / PX_PER_SEC, data.duration ?? 3);
-      } catch { /* ignore bad drops */ }
+        this.#addClip(libData.file, x / PX_PER_SEC, libData.duration ?? 3);
+      }
     });
   }
 }
@@ -426,6 +437,9 @@ class AudioTrack extends HTMLElement {
 const enc = encodeURIComponent;
 function esc(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
 customElements.define('audio-track', AudioTrack);

@@ -489,13 +489,29 @@ class AudioLibrary extends HTMLElement {
       el.addEventListener('dragstart', (e) => {
         el.setAttribute('dragging', '');
         e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData('application/json', JSON.stringify({
+        // Store payload in a window variable — Chrome drops getData() across shadow roots
+        window.__audioDragPayload = {
           file:     el.dataset.file,
           text:     el.dataset.text,
           duration: parseFloat(el.dataset.duration) || 0,
-        }));
+        };
+        e.dataTransfer.setData('text/plain', el.dataset.file); // signals a valid drag
+
+        // Compact drag ghost instead of the full-width row
+        const ghost = document.createElement('div');
+        ghost.textContent = el.dataset.text || el.dataset.file;
+        ghost.style.cssText = 'position:fixed;top:-999px;left:-999px;'
+          + 'background:#1e3a8a;color:#fff;border-radius:4px;'
+          + 'padding:3px 12px;font:12px/1.8 sans-serif;'
+          + 'white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis';
+        document.body.appendChild(ghost);
+        e.dataTransfer.setDragImage(ghost, 60, 14);
+        setTimeout(() => ghost.remove(), 0);
       });
-      el.addEventListener('dragend', () => el.removeAttribute('dragging'));
+      el.addEventListener('dragend', () => {
+        el.removeAttribute('dragging');
+        window.__audioDragPayload = null;
+      });
     });
   }
 }
