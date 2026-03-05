@@ -10,9 +10,10 @@ const CONFDIR = (cfgFlagIdx >= 0 && Deno.args[cfgFlagIdx + 1])
   ? Deno.args[cfgFlagIdx + 1]
   : `${BASE}/.config`;
 
-const CONFILE = `${CONFDIR}/config.json`;
-const STATIC  = `${BASE}/core`;
-const TTS     = `${BASE}/core/tts`;
+const CONFILE    = `${CONFDIR}/config.json`;
+const STATIC     = `${BASE}/core`;
+const EXTRA      = `${BASE}/extra`;
+const VOICES_DIR = `${CONFDIR}/voices`; // persistent custom voice WAV storage
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,52 @@ async function readConfig(): Promise<Config> {
 async function writeConfig(config: Config): Promise<void> {
   await Deno.mkdir(CONFDIR, { recursive: true });
   await Deno.writeTextFile(CONFILE, JSON.stringify(config, null, 2));
+}
+
+// ─── Voice preference (per-project) ──────────────────────────────────────────
+
+function voiceFile(pd: string) { return `${pd}/voice.json`; }
+
+async function readVoice(pd: string): Promise<string> {
+  try { return (JSON.parse(await Deno.readTextFile(voiceFile(pd)))).voice ?? "cosette"; }
+  catch { return "cosette"; }
+}
+
+async function writeVoice(pd: string, voice: string): Promise<void> {
+  await Deno.writeTextFile(voiceFile(pd), JSON.stringify({ voice }, null, 2));
+}
+
+// ─── TTS server management ────────────────────────────────────────────────────
+
+let TTS_PORT = 0;
+
+async function waitForTtsServer(port: number): Promise<void> {
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      const r = await fetch(`http://localhost:${port}/v1/voices`);
+      await r.body?.cancel();
+      if (r.ok) return;
+    } catch { /* not ready yet */ }
+  }
+  throw new Error(`TTS server did not start on port ${port}`);
+}
+
+// Re-register all stored custom voices after a TTS server restart
+async function registerStoredVoices(port: number): Promise<void> {
+  try {
+    for await (const entry of Deno.readDir(VOICES_DIR)) {
+      if (!entry.name.endsWith(".wav")) continue;
+      const name = entry.name.replace(/\.wav$/, "");
+      try {
+        const wav = await Deno.readFile(`${VOICES_DIR}/${entry.name}`);
+        await fetch(
+          `http://localhost:${port}/v1/voices?name=${encodeURIComponent(name)}`,
+          { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav },
+        );
+      } catch { /* skip failed registrations */ }
+    }
+  } catch { /* voices dir may not exist yet */ }
 }
 
 // ─── Courses ─────────────────────────────────────────────────────────────────
@@ -117,7 +164,6 @@ async function serveFile(pathname: string): Promise<Response> {
 async function handle(req: Request): Promise<Response> {
   const { pathname, searchParams } = new URL(req.url);
   const method = req.method;
-  // Split path into segments for parametric routes
   const seg = pathname.split("/").filter(Boolean); // ['api', 'resource', ...]
 
   // ── Config ───────────────────────────────────────────────────────────────
@@ -191,6 +237,75 @@ async function handle(req: Request): Promise<Response> {
     } catch { return Response.json({ error: "Could not create directory (may already exist)" }, { status: 400 }); }
   }
 
+  // ── Voices ───────────────────────────────────────────────────────────────
+
+  // GET /api/voices — list all voices from TTS server
+  if (pathname === "/api/voices" && method === "GET") {
+    try {
+      const res = await fetch(`http://localhost:${TTS_PORT}/v1/voices`);
+      return Response.json(await res.json());
+    } catch {
+      return Response.json({ error: "TTS server unavailable" }, { status: 503 });
+    }
+  }
+
+  // POST /api/voices?name=<name> — upload a custom voice WAV; stored persistently
+  if (pathname === "/api/voices" && method === "POST") {
+    const name = searchParams.get("name")?.trim() ?? "";
+    if (!name || !/^[\w\-]+$/.test(name)) {
+      return Response.json({ error: "Invalid voice name (alphanumeric + hyphens only)" }, { status: 400 });
+    }
+    try {
+      const wav = new Uint8Array(await req.arrayBuffer());
+      await Deno.mkdir(VOICES_DIR, { recursive: true });
+      await Deno.writeFile(`${VOICES_DIR}/${name}.wav`, wav);
+      const ttsRes = await fetch(
+        `http://localhost:${TTS_PORT}/v1/voices?name=${encodeURIComponent(name)}`,
+        { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav },
+      );
+      if (!ttsRes.ok) {
+        await Deno.remove(`${VOICES_DIR}/${name}.wav`).catch(() => {});
+        const err = await ttsRes.text();
+        return Response.json({ error: `TTS server rejected voice: ${err}` }, { status: 500 });
+      }
+      await ttsRes.body?.cancel();
+      return Response.json({ name }, { status: 201 });
+    } catch (e) {
+      return Response.json({ error: String(e) }, { status: 500 });
+    }
+  }
+
+  // DELETE /api/voices/:name — remove a custom voice
+  if (seg[0] === "api" && seg[1] === "voices" && seg.length === 3 && method === "DELETE") {
+    const name = decodeURIComponent(seg[2]);
+    try {
+      await fetch(`http://localhost:${TTS_PORT}/v1/voices/${encodeURIComponent(name)}`, { method: "DELETE" });
+      await Deno.remove(`${VOICES_DIR}/${name}.wav`).catch(() => {});
+      return new Response(null, { status: 204 });
+    } catch {
+      return Response.json({ error: "TTS server unavailable" }, { status: 503 });
+    }
+  }
+
+  // ── Voice preference ─────────────────────────────────────────────────────
+
+  // GET /api/voice — read active voice for the current project
+  if (pathname === "/api/voice" && method === "GET") {
+    const { projectDir: pd } = await readConfig();
+    const voice = pd ? await readVoice(pd) : "cosette";
+    return Response.json({ voice });
+  }
+
+  // PUT /api/voice — save active voice for the current project
+  if (pathname === "/api/voice" && method === "PUT") {
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    const { voice } = await req.json() as { voice?: string };
+    if (!voice?.trim()) return Response.json({ error: "voice required" }, { status: 400 });
+    await writeVoice(pd, voice.trim());
+    return Response.json({ voice: voice.trim() });
+  }
+
   // ── Modules  GET|POST /api/modules/:course ───────────────────────────────
 
   if (seg[0] === "api" && seg[1] === "modules" && seg.length === 3) {
@@ -236,7 +351,6 @@ async function handle(req: Request): Promise<Response> {
   // ── Slides  GET|PUT /api/slides/:course/:module ──────────────────────────
 
   if (seg[0] === "api" && seg[1] === "slides" && seg.length === 4) {
-    const [,,, rawC, rawM] = seg;
     const [course, module] = [decodeURIComponent(seg[2]), decodeURIComponent(seg[3])];
     const { projectDir: pd } = await readConfig();
     if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
@@ -336,20 +450,22 @@ async function handle(req: Request): Promise<Response> {
       return Response.json(clips);
     }
 
-    // POST /api/audio/:course/:module — generate audio via TTS
+    // POST /api/audio/:course/:module — generate audio via TTS server
     if (seg.length === 4 && method === "POST") {
       const { text } = await req.json() as { text?: string };
       if (!text?.trim()) return Response.json({ error: "text required" }, { status: 400 });
+      const voice = await readVoice(pd);
       const file = `${Date.now()}.wav`;
       const wavPath = `${aDir}/${file}`;
       await Deno.mkdir(aDir, { recursive: true });
       try {
-        const proc = new Deno.Command(TTS, {
-          args: ["-wav", wavPath, text.trim()],
-          cwd: `${BASE}/core`,
+        const ttsRes = await fetch(`http://localhost:${TTS_PORT}/v1/audio/speech`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ input: text.trim(), voice }),
         });
-        const { success } = await proc.output();
-        if (!success) throw new Error("TTS exited with error");
+        if (!ttsRes.ok) throw new Error(`TTS error ${ttsRes.status}: ${await ttsRes.text()}`);
+        await Deno.writeFile(wavPath, new Uint8Array(await ttsRes.arrayBuffer()));
         const duration = await wavDuration(wavPath);
         const meta: AudioMeta = { text: text.trim(), duration };
         await Deno.writeTextFile(`${aDir}/${file.replace(/\.wav$/, ".meta.json")}`, JSON.stringify(meta, null, 2));
@@ -374,8 +490,43 @@ function findPort(from: number): number {
   throw new Error(`No free port found near ${from}`);
 }
 
+// Ensure config dirs exist
 await Deno.mkdir(CONFDIR, { recursive: true });
+await Deno.mkdir(VOICES_DIR, { recursive: true });
 try { await Deno.stat(CONFILE); } catch { await writeConfig({ projectDir: null }); }
+
+// Start TTS server subprocess
+const ttsPort = findPort(7800);
+TTS_PORT = ttsPort;
+
+const ttsProc = new Deno.Command(Deno.execPath(), {
+  args: [
+    "run",
+    "--allow-read", "--allow-net", "--allow-sys",
+    "--allow-ffi", "--allow-env", "--allow-write",
+    "--node-modules-dir=none",
+    `${EXTRA}/pocket-tts-deno/server.ts`,
+    "--port", String(ttsPort),
+  ],
+  cwd: `${EXTRA}/pocket-tts-deno`,
+  stdout: "inherit",
+  stderr: "inherit",
+}).spawn();
+
+// Wait for TTS server, then re-register any stored custom voices
+console.log("  Starting TTS server…");
+try {
+  await waitForTtsServer(ttsPort);
+  await registerStoredVoices(ttsPort);
+  console.log(`  tts server  →  http://localhost:${ttsPort}`);
+} catch (e) {
+  console.error(`  Warning: TTS server failed to start: ${(e as Error).message}`);
+}
+
+// Shut down TTS server when the main process exits
+globalThis.addEventListener("unload", () => {
+  try { ttsProc.kill("SIGTERM"); } catch { /* ignore */ }
+});
 
 const port = findPort(7700);
 console.log(`\n  useful  →  http://localhost:${port}`);

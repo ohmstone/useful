@@ -20,6 +20,42 @@ const STYLES = `
     color: var(--text-muted);
   }
 
+  /* Voice section */
+  .voice-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .voice-sel {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 7px 10px;
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--font);
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .voice-sel:focus { border-color: var(--accent); }
+
+  .add-voice-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .add-voice-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
   /* Generate form */
   .gen-row {
     display: flex;
@@ -59,8 +95,32 @@ const STYLES = `
   .btn:disabled { opacity: 0.45; cursor: not-allowed; }
   .btn-primary { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
   .btn-primary:hover { background: var(--accent); border-color: var(--accent); }
+  .btn-sm { padding: 6px 10px; font-size: 12px; }
+  .btn-danger { border-color: var(--danger); color: var(--danger); }
+  .btn-danger:hover { background: rgba(248,113,113,0.1); border-color: var(--danger); }
 
-  .gen-error { font-size: 12px; color: var(--danger); }
+  .file-label {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+    font-size: 12px;
+    font-family: var(--font);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.15s;
+  }
+  .file-label:hover { border-color: var(--accent); color: var(--text); }
+  .file-label.has-file { color: var(--text); border-color: var(--accent-deep); }
+
+  .gen-error, .voice-error {
+    font-size: 12px;
+    color: var(--danger);
+    min-height: 16px;
+  }
 
   /* Clip list */
   .clip-list {
@@ -122,6 +182,9 @@ class AudioLibrary extends HTMLElement {
   static observedAttributes = ['course', 'module'];
 
   #clips       = [];
+  #voices      = { builtin: [], custom: [] };
+  #voice       = 'cosette';
+  #addingVoice = false;
   #audio       = null; // current HTMLAudioElement
   #editingFile = null; // file currently open in editor
 
@@ -138,9 +201,77 @@ class AudioLibrary extends HTMLElement {
 
   async #load() {
     try {
-      const res  = await fetch(`/api/audio/${enc(this.course)}/${enc(this.module)}`);
-      this.#clips = await res.json();
-    } catch { this.#clips = []; }
+      const [clipsRes, voicesRes, prefRes] = await Promise.all([
+        fetch(`/api/audio/${enc(this.course)}/${enc(this.module)}`),
+        fetch('/api/voices'),
+        fetch('/api/voice'),
+      ]);
+      this.#clips  = await clipsRes.json();
+      this.#voices = await voicesRes.json();
+      const pref   = await prefRes.json();
+      this.#voice  = pref.voice ?? 'cosette';
+    } catch {
+      this.#clips  = [];
+      this.#voices = { builtin: [], custom: [] };
+    }
+    this.#render();
+  }
+
+  async #saveVoice(voice) {
+    this.#voice = voice;
+    await fetch('/api/voice', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice }),
+    });
+    // no re-render needed; select already reflects the value
+  }
+
+  async #registerVoice(name, file, btn, errorEl) {
+    if (!name) { errorEl.textContent = 'Name required'; return; }
+    if (!file)  { errorEl.textContent = 'WAV file required'; return; }
+    btn.disabled    = true;
+    btn.textContent = 'Uploading…';
+    errorEl.textContent = '';
+    try {
+      const buf = await file.arrayBuffer();
+      const res = await fetch(`/api/voices?name=${encodeURIComponent(name)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'audio/wav' },
+        body: buf,
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      // Reload voices, select the new one, close add form
+      const vRes       = await fetch('/api/voices');
+      this.#voices     = await vRes.json();
+      this.#voice      = name;
+      this.#addingVoice = false;
+      await fetch('/api/voice', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice: name }),
+      });
+      this.#render();
+    } catch (e) {
+      errorEl.textContent = e.message;
+      btn.disabled    = false;
+      btn.textContent = 'Upload';
+    }
+  }
+
+  async #deleteVoice(name) {
+    await fetch(`/api/voices/${enc(name)}`, { method: 'DELETE' });
+    const vRes   = await fetch('/api/voices');
+    this.#voices = await vRes.json();
+    if (this.#voice === name) {
+      this.#voice = 'cosette';
+      await fetch('/api/voice', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice: 'cosette' }),
+      });
+    }
     this.#render();
   }
 
@@ -181,10 +312,50 @@ class AudioLibrary extends HTMLElement {
     this.#audio.play();
   }
 
+  #voiceOptions() {
+    const builtin = (this.#voices.builtin ?? []);
+    const custom  = (this.#voices.custom  ?? []);
+    const all     = [...builtin, ...custom];
+    // If current voice isn't in the list yet (e.g. server starting), include it
+    if (this.#voice && !all.includes(this.#voice)) builtin.unshift(this.#voice);
+
+    const opts = (names, group) => names.map(n =>
+      `<option value="${esc(n)}" ${n === this.#voice ? 'selected' : ''}>${esc(n)}</option>`
+    ).join('');
+
+    if (custom.length) {
+      return `<optgroup label="Built-in">${opts(builtin)}</optgroup>
+              <optgroup label="Custom">${opts(custom)}</optgroup>`;
+    }
+    return opts(builtin);
+  }
+
   #render() {
     const sr = this.shadowRoot;
+    const isCustom = (this.#voices.custom ?? []).includes(this.#voice);
+
     sr.innerHTML = `
       <style>${STYLES}</style>
+
+      <div class="section-label">Voice</div>
+      <div class="voice-row">
+        <select class="voice-sel" id="voice-sel">${this.#voiceOptions()}</select>
+        ${isCustom ? `<button class="btn btn-sm btn-danger" id="btn-del-voice" title="Remove this voice">Remove</button>` : ''}
+        <button class="btn btn-sm" id="btn-add-voice">${this.#addingVoice ? 'Cancel' : '+ Add'}</button>
+      </div>
+
+      ${this.#addingVoice ? `
+        <div class="add-voice-form">
+          <div class="add-voice-row">
+            <input class="input" id="voice-name-inp" type="text"
+              placeholder="Voice name (letters, digits, hyphens)" autocomplete="off" />
+            <label class="file-label" id="voice-file-label" for="voice-file-inp">Choose WAV</label>
+            <input type="file" id="voice-file-inp" accept="audio/wav,.wav" style="display:none" />
+            <button class="btn btn-sm btn-primary" id="btn-upload-voice">Upload</button>
+          </div>
+          <div class="voice-error" id="voice-error"></div>
+        </div>
+      ` : ''}
 
       <div class="section-label">Generated Audio</div>
 
@@ -220,6 +391,48 @@ class AudioLibrary extends HTMLElement {
       </div>
       ${this.#clips.length ? `<div class="drag-hint">Drag clips onto the track above</div>` : ''}
     `;
+
+    // Voice selector change
+    sr.querySelector('#voice-sel').addEventListener('change', (e) => {
+      this.#saveVoice(e.target.value);
+    });
+
+    // Add / Cancel voice form toggle
+    sr.querySelector('#btn-add-voice').addEventListener('click', () => {
+      this.#addingVoice = !this.#addingVoice;
+      this.#render();
+    });
+
+    // Remove custom voice
+    sr.querySelector('#btn-del-voice')?.addEventListener('click', () => {
+      this.#deleteVoice(this.#voice);
+    });
+
+    // Add voice form wiring
+    if (this.#addingVoice) {
+      let chosenFile = null;
+
+      const fileInp   = sr.querySelector('#voice-file-inp');
+      const fileLabel = sr.querySelector('#voice-file-label');
+
+      fileInp.addEventListener('change', () => {
+        chosenFile = fileInp.files[0] ?? null;
+        if (chosenFile) {
+          fileLabel.textContent = chosenFile.name;
+          fileLabel.classList.add('has-file');
+        } else {
+          fileLabel.textContent = 'Choose WAV';
+          fileLabel.classList.remove('has-file');
+        }
+      });
+
+      sr.querySelector('#btn-upload-voice').addEventListener('click', () => {
+        const nameInp = sr.querySelector('#voice-name-inp');
+        const btn     = sr.querySelector('#btn-upload-voice');
+        const errorEl = sr.querySelector('#voice-error');
+        this.#registerVoice(nameInp.value.trim(), chosenFile, btn, errorEl);
+      });
+    }
 
     // Generate form
     sr.querySelector('#form-gen').addEventListener('submit', (e) => {
