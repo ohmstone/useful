@@ -53,7 +53,6 @@ extra/
   pocket-tts-deno/              # git submodule — OpenAI-compatible TTS server (pocket-tts)
 .config/                        # Auto-created next to app.ts (or --config path)
   config.json                   # { "projectDir": string | null }
-  voices/                       # Persistent custom voice WAV files (<name>.wav)
 ```
 
 ---
@@ -62,7 +61,9 @@ extra/
 
 ```
 <projectDir>/
-  voice.json                    # { "voice": "<name>" }  — active TTS voice preference
+  _voice.json                   # { "voice": "<name>" }  — active TTS voice preference
+  _voices/                      # Persistent custom voice WAV files (<name>.wav)
+  # underscore-prefixed entries = project-level metadata; course names may NOT start with _
   <course>/
     modules.json                # ["module-name", ...]  (ordered)
     <module>/
@@ -104,14 +105,14 @@ Created automatically if it doesn't exist.
 At startup, `app.ts` spawns `extra/pocket-tts-deno/server.ts` as a Deno subprocess
 on the first available port starting at 7800. The main server waits up to 30 s for
 the TTS server to become ready, then re-registers all stored custom voices from
-`<CONFDIR>/voices/` (since pocket-tts stores voices in-memory only).
+`<projectDir>/_voices/` (since pocket-tts stores voices in-memory only).
 
 The subprocess is killed via `SIGTERM` when the main server process unloads.
 
 TTS generation sends `POST /v1/audio/speech` to the pocket-tts server.
 Built-in voices: `cosette` (default), `jean`, `fantine`.
 
-Custom voices are uploaded as WAV files, persisted to `<CONFDIR>/voices/<name>.wav`,
+Custom voices are uploaded as WAV files, persisted to `<projectDir>/_voices/<name>.wav`,
 and re-registered automatically on each startup.
 
 ### API routes
@@ -298,7 +299,7 @@ conflicting clip; if no valid position exists the action is cancelled.
 ```
 Hidden dirs (starting with `.`) are excluded.
 
-### voice.json (`<projectDir>/voice.json`)
+### _voice.json (`<projectDir>/_voice.json`)
 ```json
 { "voice": "cosette" }
 ```
