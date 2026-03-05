@@ -89,6 +89,7 @@ const STYLES = `
     display: flex;
     flex-direction: column;
     gap: 6px;
+    height: 100%;
   }
 
   .pane-label {
@@ -100,8 +101,8 @@ const STYLES = `
   }
 
   .slides-textarea {
+    flex: 1;
     min-height: 240px;
-    max-height: 480px;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
