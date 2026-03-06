@@ -32,6 +32,11 @@ const STYLES = `
   .sep                     { color: var(--text-dim); font-size: 11px; user-select: none; }
 
   /* ── Directory list ── */
+  ::-webkit-scrollbar        { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track  { background: transparent; }
+  ::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
   .dir-list {
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -88,9 +93,8 @@ const STYLES = `
     align-items: center;
     gap: 8px;
     font-size: 11px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    color: var(--border);
+    letter-spacing: 0.04em;
   }
   .divider::before, .divider::after {
     content: '';

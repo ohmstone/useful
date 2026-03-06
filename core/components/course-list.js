@@ -74,6 +74,25 @@ const STYLES = `
   .form-row { display: flex; gap: 8px; align-items: center; }
   .form-error { font-size: 12px; color: var(--danger); }
 
+  /* ── Search ── */
+  .search-row {
+    margin-bottom: 16px;
+  }
+  .search-input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--font);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .search-input:focus { border-color: var(--accent); }
+  .search-input::placeholder { color: var(--text-dim); }
+
   /* ── Course grid ── */
   .grid {
     display: grid;
@@ -95,6 +114,7 @@ class CourseList extends HTMLElement {
   #loading  = true;
   #error    = null;
   #creating = false;
+  #search   = '';
 
   constructor() {
     super();
@@ -167,22 +187,47 @@ class CourseList extends HTMLElement {
       ${this.#loading  ? `<p class="state-msg">Loading…</p>` : ''}
       ${this.#error    ? `<p class="state-msg error">${esc(this.#error)}</p>` : ''}
 
-      ${!this.#loading && !this.#error ? (
-        this.#courses.length === 0
-          ? `<p class="state-msg">No courses yet — create your first one.</p>`
-          : `<div class="grid" id="grid"></div>`
-      ) : ''}
+      ${!this.#loading && !this.#error ? (() => {
+        const visible = this.#courses.filter(c =>
+          !this.#search || c.name.toLowerCase().includes(this.#search.toLowerCase())
+        );
+        if (this.#courses.length === 0) return `<p class="state-msg">No courses yet — create your first one.</p>`;
+        return `
+          <div class="search-row">
+            <input class="search-input" id="search" type="search"
+              placeholder="Search courses…" value="${esc(this.#search)}" autocomplete="off" />
+          </div>
+          ${visible.length === 0
+            ? `<p class="state-msg">No courses match "${esc(this.#search)}"</p>`
+            : `<div class="grid" id="grid"></div>`}
+        `;
+      })() : ''}
     `;
 
     // Populate course cards (avoids innerHTML injection of user data)
     const grid = sr.querySelector('#grid');
     if (grid) {
-      for (const course of this.#courses) {
+      const visible = this.#courses.filter(c =>
+        !this.#search || c.name.toLowerCase().includes(this.#search.toLowerCase())
+      );
+      for (const course of visible) {
         const card = document.createElement('course-card');
         card.setAttribute('name', course.name);
         card.contents = course.contents;
         grid.appendChild(card);
       }
+    }
+
+    // Search input — preserve value, update filter reactively
+    const searchEl = sr.querySelector('#search');
+    if (searchEl) {
+      searchEl.addEventListener('input', () => {
+        this.#search = searchEl.value;
+        this.#render();
+        // Restore focus and cursor position after re-render
+        const next = sr.querySelector('#search');
+        if (next) { next.focus(); next.setSelectionRange(next.value.length, next.value.length); }
+      });
     }
 
     // Wire up buttons
