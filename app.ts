@@ -10,9 +10,9 @@ const CONFDIR = (cfgFlagIdx >= 0 && Deno.args[cfgFlagIdx + 1])
   ? Deno.args[cfgFlagIdx + 1]
   : `${BASE}/.config`;
 
-const CONFILE = `${CONFDIR}/config.json`;
-const STATIC  = `${BASE}/core`;
-const TTS     = `${BASE}/core/tts`;
+const CONFILE    = `${CONFDIR}/config.json`;
+const STATIC     = `${BASE}/core`;
+const EXTRA      = `${BASE}/extra`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -34,12 +34,58 @@ async function writeConfig(config: Config): Promise<void> {
   await Deno.writeTextFile(CONFILE, JSON.stringify(config, null, 2));
 }
 
+// ─── Voice preference (per-project) ──────────────────────────────────────────
+
+function voiceFile(pd: string) { return `${pd}/_voice.json`; }
+
+async function readVoice(pd: string): Promise<string> {
+  try { return (JSON.parse(await Deno.readTextFile(voiceFile(pd)))).voice ?? "cosette"; }
+  catch { return "cosette"; }
+}
+
+async function writeVoice(pd: string, voice: string): Promise<void> {
+  await Deno.writeTextFile(voiceFile(pd), JSON.stringify({ voice }, null, 2));
+}
+
+// ─── TTS server management ────────────────────────────────────────────────────
+
+let TTS_PORT = 0;
+
+async function waitForTtsServer(port: number): Promise<void> {
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      const r = await fetch(`http://localhost:${port}/v1/voices`);
+      await r.body?.cancel();
+      if (r.ok) return;
+    } catch { /* not ready yet */ }
+  }
+  throw new Error(`TTS server did not start on port ${port}`);
+}
+
+// Re-register all stored custom voices after a TTS server restart
+async function registerStoredVoices(port: number, voicesDir: string): Promise<void> {
+  try {
+    for await (const entry of Deno.readDir(voicesDir)) {
+      if (!entry.name.endsWith(".wav")) continue;
+      const name = entry.name.replace(/\.wav$/, "");
+      try {
+        const wav = await Deno.readFile(`${voicesDir}/${entry.name}`);
+        await fetch(
+          `http://localhost:${port}/v1/voices?name=${encodeURIComponent(name)}`,
+          { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav },
+        );
+      } catch { /* skip failed registrations */ }
+    }
+  } catch { /* voices dir may not exist yet */ }
+}
+
 // ─── Courses ─────────────────────────────────────────────────────────────────
 
 async function listCourses(dir: string): Promise<Course[]> {
   const courses: Course[] = [];
   for await (const entry of Deno.readDir(dir)) {
-    if (!entry.isDirectory) continue;
+    if (!entry.isDirectory || entry.name.startsWith("_")) continue;
     const contents: string[] = [];
     try {
       for await (const sub of Deno.readDir(`${dir}/${entry.name}`)) {
@@ -70,16 +116,43 @@ async function writeModules(pd: string, course: string, mods: string[]): Promise
   await Deno.writeTextFile(modulesFile(pd, course), JSON.stringify(mods, null, 2));
 }
 
-// Parse WAV header to get duration in seconds
-async function wavDuration(path: string): Promise<number> {
+// Fix WAV header sizes (streaming WAVs use 0xFFFFFFFF sentinel) and return duration in seconds.
+async function fixAndMeasureWav(path: string): Promise<number> {
   try {
-    const f = await Deno.open(path, { read: true });
-    const buf = new Uint8Array(44);
-    await f.read(buf);
-    f.close();
-    const view = new DataView(buf.buffer);
-    const byteRate = view.getUint32(28, true);
-    const dataSize = view.getUint32(40, true);
+    const fileSize = (await Deno.stat(path)).size;
+    const fh = await Deno.open(path, { read: true, write: true });
+    const buf = new Uint8Array(512);
+    const n = (await fh.read(buf)) ?? 0;
+    if (n < 12) { fh.close(); return 0; }
+
+    const view = new DataView(buf.buffer, 0, n);
+    let pos = 12; // skip RIFF(4) + fileSize(4) + WAVE(4)
+    let byteRate = 0;
+    let dataPos = -1;
+
+    while (pos + 8 <= n) {
+      const id = String.fromCharCode(buf[pos], buf[pos+1], buf[pos+2], buf[pos+3]);
+      const chunkSize = view.getUint32(pos + 4, true);
+      if (id === 'fmt ' && pos + 20 <= n) {
+        byteRate = view.getUint32(pos + 16, true);
+        pos += 8 + chunkSize + (chunkSize & 1);
+      } else if (id === 'data') {
+        dataPos = pos;
+        break;
+      } else {
+        pos += 8 + chunkSize + (chunkSize & 1);
+      }
+    }
+
+    if (dataPos < 0 || byteRate === 0) { fh.close(); return 0; }
+
+    const dataSize = fileSize - (dataPos + 8);
+    view.setUint32(4, fileSize - 8, true);        // fix RIFF chunk size
+    view.setUint32(dataPos + 4, dataSize, true);  // fix data chunk size
+    await fh.seek(0, Deno.SeekMode.Start);
+    await fh.write(buf.subarray(0, n));
+    fh.close();
+
     return byteRate > 0 ? dataSize / byteRate : 0;
   } catch { return 0; }
 }
@@ -117,7 +190,6 @@ async function serveFile(pathname: string): Promise<Response> {
 async function handle(req: Request): Promise<Response> {
   const { pathname, searchParams } = new URL(req.url);
   const method = req.method;
-  // Split path into segments for parametric routes
   const seg = pathname.split("/").filter(Boolean); // ['api', 'resource', ...]
 
   // ── Config ───────────────────────────────────────────────────────────────
@@ -156,7 +228,7 @@ async function handle(req: Request): Promise<Response> {
     if (!projectDir) return Response.json({ error: "No project directory" }, { status: 400 });
     const body = await req.json() as { name?: unknown };
     const name = typeof body.name === "string" ? body.name.trim() : "";
-    if (!name || !/^[\w\s\-]+$/.test(name)) {
+    if (!name || !/^[\w\s\-]+$/.test(name) || name.startsWith("_")) {
       return Response.json({ error: "Invalid course name" }, { status: 400 });
     }
     try { await Deno.mkdir(`${projectDir}/${name}`); }
@@ -189,6 +261,80 @@ async function handle(req: Request): Promise<Response> {
       await Deno.mkdir(`${parent}/${name}`);
       return Response.json({ path: `${parent}/${name}` });
     } catch { return Response.json({ error: "Could not create directory (may already exist)" }, { status: 400 }); }
+  }
+
+  // ── Voices ───────────────────────────────────────────────────────────────
+
+  // GET /api/voices — list all voices from TTS server
+  if (pathname === "/api/voices" && method === "GET") {
+    try {
+      const res = await fetch(`http://localhost:${TTS_PORT}/v1/voices`);
+      return Response.json(await res.json());
+    } catch {
+      return Response.json({ error: "TTS server unavailable" }, { status: 503 });
+    }
+  }
+
+  // POST /api/voices?name=<name> — upload a custom voice WAV; stored persistently
+  if (pathname === "/api/voices" && method === "POST") {
+    const name = searchParams.get("name")?.trim() ?? "";
+    if (!name || !/^[\w\-]+$/.test(name)) {
+      return Response.json({ error: "Invalid voice name (alphanumeric + hyphens only)" }, { status: 400 });
+    }
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    const voicesDir = `${pd}/_voices`;
+    try {
+      const wav = new Uint8Array(await req.arrayBuffer());
+      await Deno.mkdir(voicesDir, { recursive: true });
+      await Deno.writeFile(`${voicesDir}/${name}.wav`, wav);
+      const ttsRes = await fetch(
+        `http://localhost:${TTS_PORT}/v1/voices?name=${encodeURIComponent(name)}`,
+        { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav },
+      );
+      if (!ttsRes.ok) {
+        await Deno.remove(`${voicesDir}/${name}.wav`).catch(() => {});
+        const err = await ttsRes.text();
+        return Response.json({ error: `TTS server rejected voice: ${err}` }, { status: 500 });
+      }
+      await ttsRes.body?.cancel();
+      return Response.json({ name }, { status: 201 });
+    } catch (e) {
+      return Response.json({ error: String(e) }, { status: 500 });
+    }
+  }
+
+  // DELETE /api/voices/:name — remove a custom voice
+  if (seg[0] === "api" && seg[1] === "voices" && seg.length === 3 && method === "DELETE") {
+    const name = decodeURIComponent(seg[2]);
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    try {
+      await fetch(`http://localhost:${TTS_PORT}/v1/voices/${encodeURIComponent(name)}`, { method: "DELETE" });
+      await Deno.remove(`${pd}/_voices/${name}.wav`).catch(() => {});
+      return new Response(null, { status: 204 });
+    } catch {
+      return Response.json({ error: "TTS server unavailable" }, { status: 503 });
+    }
+  }
+
+  // ── Voice preference ─────────────────────────────────────────────────────
+
+  // GET /api/voice — read active voice for the current project
+  if (pathname === "/api/voice" && method === "GET") {
+    const { projectDir: pd } = await readConfig();
+    const voice = pd ? await readVoice(pd) : "cosette";
+    return Response.json({ voice });
+  }
+
+  // PUT /api/voice — save active voice for the current project
+  if (pathname === "/api/voice" && method === "PUT") {
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    const { voice } = await req.json() as { voice?: string };
+    if (!voice?.trim()) return Response.json({ error: "voice required" }, { status: 400 });
+    await writeVoice(pd, voice.trim());
+    return Response.json({ voice: voice.trim() });
   }
 
   // ── Modules  GET|POST /api/modules/:course ───────────────────────────────
@@ -236,7 +382,6 @@ async function handle(req: Request): Promise<Response> {
   // ── Slides  GET|PUT /api/slides/:course/:module ──────────────────────────
 
   if (seg[0] === "api" && seg[1] === "slides" && seg.length === 4) {
-    const [,,, rawC, rawM] = seg;
     const [course, module] = [decodeURIComponent(seg[2]), decodeURIComponent(seg[3])];
     const { projectDir: pd } = await readConfig();
     if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
@@ -297,7 +442,7 @@ async function handle(req: Request): Promise<Response> {
       const wavPath = `${aDir}/${file}`;
       const data = new Uint8Array(await req.arrayBuffer());
       await Deno.writeFile(wavPath, data);
-      const duration = await wavDuration(wavPath);
+      const duration = await fixAndMeasureWav(wavPath);
       const metaPath = `${aDir}/${file.replace(/\.wav$/, ".meta.json")}`;
       try {
         const meta: AudioMeta = JSON.parse(await Deno.readTextFile(metaPath));
@@ -336,21 +481,23 @@ async function handle(req: Request): Promise<Response> {
       return Response.json(clips);
     }
 
-    // POST /api/audio/:course/:module — generate audio via TTS
+    // POST /api/audio/:course/:module — generate audio via TTS server
     if (seg.length === 4 && method === "POST") {
       const { text } = await req.json() as { text?: string };
       if (!text?.trim()) return Response.json({ error: "text required" }, { status: 400 });
+      const voice = await readVoice(pd);
       const file = `${Date.now()}.wav`;
       const wavPath = `${aDir}/${file}`;
       await Deno.mkdir(aDir, { recursive: true });
       try {
-        const proc = new Deno.Command(TTS, {
-          args: ["-wav", wavPath, text.trim()],
-          cwd: `${BASE}/core`,
+        const ttsRes = await fetch(`http://localhost:${TTS_PORT}/v1/audio/speech`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ input: text.trim(), voice }),
         });
-        const { success } = await proc.output();
-        if (!success) throw new Error("TTS exited with error");
-        const duration = await wavDuration(wavPath);
+        if (!ttsRes.ok) throw new Error(`TTS error ${ttsRes.status}: ${await ttsRes.text()}`);
+        await Deno.writeFile(wavPath, new Uint8Array(await ttsRes.arrayBuffer()));
+        const duration = await fixAndMeasureWav(wavPath);
         const meta: AudioMeta = { text: text.trim(), duration };
         await Deno.writeTextFile(`${aDir}/${file.replace(/\.wav$/, ".meta.json")}`, JSON.stringify(meta, null, 2));
         return Response.json({ file, text: text.trim(), duration }, { status: 201 });
@@ -374,8 +521,43 @@ function findPort(from: number): number {
   throw new Error(`No free port found near ${from}`);
 }
 
+// Ensure config dir exists
 await Deno.mkdir(CONFDIR, { recursive: true });
 try { await Deno.stat(CONFILE); } catch { await writeConfig({ projectDir: null }); }
+
+// Start TTS server subprocess
+const ttsPort = findPort(7800);
+TTS_PORT = ttsPort;
+
+const ttsProc = new Deno.Command(Deno.execPath(), {
+  args: [
+    "run",
+    "--allow-read", "--allow-net", "--allow-sys",
+    "--allow-ffi", "--allow-env", "--allow-write",
+    "--node-modules-dir=none",
+    `${EXTRA}/pocket-tts-deno/server.ts`,
+    "--port", String(ttsPort),
+  ],
+  cwd: `${EXTRA}/pocket-tts-deno`,
+  stdout: "inherit",
+  stderr: "inherit",
+}).spawn();
+
+// Wait for TTS server, then re-register any stored custom voices
+console.log("  Starting TTS server…");
+try {
+  await waitForTtsServer(ttsPort);
+  const { projectDir: startupPd } = await readConfig();
+  if (startupPd) await registerStoredVoices(ttsPort, `${startupPd}/_voices`);
+  console.log(`  tts server  →  http://localhost:${ttsPort}`);
+} catch (e) {
+  console.error(`  Warning: TTS server failed to start: ${(e as Error).message}`);
+}
+
+// Shut down TTS server when the main process exits
+globalThis.addEventListener("unload", () => {
+  try { ttsProc.kill("SIGTERM"); } catch { /* ignore */ }
+});
 
 const port = findPort(7700);
 console.log(`\n  useful  →  http://localhost:${port}`);

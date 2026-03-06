@@ -37,7 +37,6 @@ core/
   index.html                    # SPA shell — mounts <app-root>, loads fonts + CSS
   style.css                     # CSS custom properties (theme tokens) + global reset
   main.js                       # ES module entry; imports all components (leaves first)
-  tts                           # TTS binary (call: tts -wav <out>.wav "<text>")
   components/
     course-card.js              # <course-card>    — displays one course; dispatches course-open
     course-list.js              # <course-list>    — course grid + search + new-course form
@@ -47,9 +46,11 @@ core/
     slide-preview.js            # <slide-preview>  — 16:9 slide display + nav; exports parseSlides()
     audio-track.js              # <audio-track>    — horizontal timeline; clips draggable to reposition
     audio-editor.js             # <audio-editor>   — waveform editor; cut/silence regions; saves WAV
-    audio-library.js            # <audio-library>  — TTS generation + clip list; Edit opens audio-editor
+    audio-library.js            # <audio-library>  — TTS + voice selector + clip list; Edit opens audio-editor
     module-editor.js            # <module-editor>  — full editing view; imports parseSlides; playback
     app-root.js                 # <app-root>       — top-level shell, state + nav machine
+extra/
+  pocket-tts-deno/              # git submodule — OpenAI-compatible TTS server (pocket-tts)
 .config/                        # Auto-created next to app.ts (or --config path)
   config.json                   # { "projectDir": string | null }
 ```
@@ -60,6 +61,9 @@ core/
 
 ```
 <projectDir>/
+  _voice.json                   # { "voice": "<name>" }  — active TTS voice preference
+  _voices/                      # Persistent custom voice WAV files (<name>.wav)
+  # underscore-prefixed entries = project-level metadata; course names may NOT start with _
   <course>/
     modules.json                # ["module-name", ...]  (ordered)
     <module>/
@@ -96,13 +100,20 @@ Single-file Deno HTTP server. Zero external dependencies.
 Resolved at startup: `--config <path>` flag › `.config/` next to `app.ts`.
 Created automatically if it doesn't exist.
 
-### TTS
+### TTS server
 
-The `core/tts` binary is invoked as:
-```
-tts -wav <absolute-output-path>.wav "<text>"
-```
-cwd is set to `core/` so TTS can find its data files. Needs `--allow-run`.
+At startup, `app.ts` spawns `extra/pocket-tts-deno/server.ts` as a Deno subprocess
+on the first available port starting at 7800. The main server waits up to 30 s for
+the TTS server to become ready, then re-registers all stored custom voices from
+`<projectDir>/_voices/` (since pocket-tts stores voices in-memory only).
+
+The subprocess is killed via `SIGTERM` when the main server process unloads.
+
+TTS generation sends `POST /v1/audio/speech` to the pocket-tts server.
+Built-in voices: `cosette` (default), `jean`, `fantine`.
+
+Custom voices are uploaded as WAV files, persisted to `<projectDir>/_voices/<name>.wav`,
+and re-registered automatically on each startup.
 
 ### API routes
 
@@ -122,10 +133,15 @@ cwd is set to `core/` so TTS can find its data files. Needs `--allow-run`.
 | GET | `/api/track/:course/:module` | — | `TrackClip[]` | Get track composition |
 | PUT | `/api/track/:course/:module` | `TrackClip[]` | 204 | Save track |
 | GET | `/api/audio/:course/:module` | — | `AudioMeta[]` | List generated audio |
-| POST | `/api/audio/:course/:module` | `{ text }` | `AudioMeta` | Generate audio via TTS |
+| POST | `/api/audio/:course/:module` | `{ text }` | `AudioMeta` | Generate audio via TTS (uses stored voice pref) |
 | GET | `/api/audio/:course/:module/:file` | — | `audio/wav` | Serve WAV file |
 | PUT | `/api/audio/:course/:module/:file` | `audio/wav` | `{ duration }` | Replace WAV (from editor) |
 | DELETE | `/api/audio/:course/:module/:file` | — | 204 | Delete WAV + meta |
+| GET | `/api/voices` | — | `{ builtin: string[], custom: string[] }` | List available TTS voices |
+| POST | `/api/voices?name=<name>` | `audio/wav` | 200 | Upload + register custom voice |
+| DELETE | `/api/voices/:name` | — | 204 | Remove custom voice (server + disk) |
+| GET | `/api/voice` | — | `{ voice: string }` | Get active voice preference for project |
+| PUT | `/api/voice` | `{ voice }` | 204 | Set active voice preference for project |
 
 ### Static file serving
 
@@ -282,3 +298,14 @@ conflicting clip; if no valid position exists the action is cancelled.
 { "path": "/home/user", "entries": [{ "name": "projects" }] }
 ```
 Hidden dirs (starting with `.`) are excluded.
+
+### _voice.json (`<projectDir>/_voice.json`)
+```json
+{ "voice": "cosette" }
+```
+Defaults to `"cosette"` if file is absent.
+
+### Voices list (`GET /api/voices`)
+```json
+{ "builtin": ["cosette", "jean", "fantine"], "custom": ["my-voice"] }
+```
