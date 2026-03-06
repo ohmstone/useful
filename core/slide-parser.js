@@ -6,7 +6,7 @@
 // Slide:
 //   { duration, header, bg, body: Block[] }
 //
-// Block types: paragraph | heading | list | image | code | columns | emph | inject
+// Block types: paragraph | heading | list | image | code | columns | emph | plugin
 // Span types:  text | bold | italic | underline | image
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -177,8 +177,8 @@ function _parseSlide(duration, text) {
         const fit  = ap[1] || 'contain';
         target().push({ type: 'image', src: `/api/inject/${encodeURIComponent(file)}`, alt: '', fit, ...takeStyle() });
 
-      } else if (cmd === 'inject') {
-        target().push({ type: 'inject', file: ap[0] || '', start: parseFloat(ap[1]) || 0, duration: parseFloat(ap[2]) || 1, dataFile: ap[3] || null });
+      } else if (cmd === 'plugin') {
+        target().push({ type: 'plugin', file: ap[0] || '', dataFile: ap[1] || null });
       }
       continue;
     }

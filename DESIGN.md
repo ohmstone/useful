@@ -45,7 +45,7 @@ core/
     course-view.js              # <course-view>    — ordered module list; drag-to-reorder
     dir-browser.js              # <dir-browser>    — filesystem navigator
     dir-picker.js               # <dir-picker>     — first-run setup shell
-    slide-preview.js            # <slide-preview>  — 16:9 rich slide renderer; timing-aware (emph/inject)
+    slide-preview.js            # <slide-preview>  — fixed 1920×1080 canvas scaled to stage; emph/plugin timing; fullscreen
     audio-track.js              # <audio-track>    — horizontal timeline; clips draggable to reposition
     audio-editor.js             # <audio-editor>   — waveform editor; cut/silence regions; saves WAV
     audio-library.js            # <audio-library>  — TTS + voice selector + clip list; Edit opens audio-editor
@@ -111,14 +111,14 @@ which returns a typed AST. The renderer in [slide-preview.js](core/components/sl
 consumes the AST and supports timing-aware features (emph dimming, inject invocation).
 
 **Block types:** `paragraph`, `heading` (level 1/2), `list` (ordered/unordered),
-`image` (via `@image filename fit`; file served from `_inject/`), `code`, `columns`, `emph` (timed), `inject` (timed, external JS).
+`image` (via `@image filename fit`; file served from `_inject/`), `code`, `columns`, `emph` (timed), `plugin` (external JS; fills available space, no time window).
 
 **Inline spans:** `text`, `bold`, `italic`, `underline`, `image` (inline `![alt](src)` in span context only).
 
 **Directive argument quoting:** any directive arg can be single- or double-quoted to support filenames
 with spaces: `@inject "my chart.js" 2 5 "sales data.json"`.
 
-**`dataFn` in inject modules:** `dataFn()` → `Response` for the default data file; `dataFn("name")` → `Response` for any named file in `_inject/`. Caller chooses `.text()` / `.json()` / `.arrayBuffer()` / `.blob()`.
+**`dataFn` in plugin modules:** `dataFn()` → `Response` for the default data file; `dataFn("name")` → `Response` for any named file in `_inject/`. Caller chooses `.text()` / `.json()` / `.arrayBuffer()` / `.blob()`.
 
 **Style hints:** `{big}`, `{small}`, `{center}`, `{right}`, `{color:value}` — placed
 on their own line, apply to the next block.
@@ -289,7 +289,7 @@ conflicting clip; if no valid position exists the action is cancelled.
 - On play: fetches track clips from API, parses slides, uses `requestAnimationFrame` loop to
   advance slide index and `setTimeout` to schedule audio clips at their `startTime`
 - `<slide-preview>` exposes `set currentIndex(val)` and `set slideTime(val)` for programmatic control during playback
-- `set slideTime(t)` triggers an incremental update (no full re-render): updates emph dimming CSS class and invokes active inject functions
+- `set slideTime(t)` triggers an incremental update (no full re-render): updates emph dimming CSS class and activates plugin functions (once per playback start)
 - Stop button cancels RAF, clears timeouts, pauses all audio
 
 ### Audio editing (`<audio-editor>`)

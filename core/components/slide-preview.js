@@ -3,7 +3,10 @@
 // API:
 //   set slides(parsedSlides)  — replace slide array, re-render
 //   set currentIndex(n)       — jump to slide n, re-render
-//   set slideTime(t)          — update sub-slide time (seconds); triggers emph/inject, no full re-render
+//   set slideTime(t)          — update sub-slide time (seconds); triggers emph/plugin, no full re-render
+//
+// Rendering is always at an internal 1920×1080 canvas scaled to fit the stage,
+// so layout is consistent regardless of browser window size.
 //
 // parseSlides is no longer exported here — import from ../slide-parser.js
 
@@ -14,6 +17,20 @@ import { parseInline } from '../slide-parser.js';
 const STYLES = `
   :host { display: flex; flex-direction: column; gap: 10px; }
 
+  /* ── Fullscreen: host fills viewport, stage fills host, nav hidden ── */
+  :host(:fullscreen) {
+    background: #12121a;
+    gap: 0;
+  }
+  :host(:fullscreen) .stage {
+    flex: 1;
+    aspect-ratio: unset;
+    border: none;
+    border-radius: 0;
+  }
+  :host(:fullscreen) .nav,
+  :host(:fullscreen) .slide-meta { display: none; }
+
   /* ── Stage ── */
   .stage {
     aspect-ratio: 16 / 9;
@@ -23,6 +40,16 @@ const STYLES = `
     position: relative;
     background: #12121a;
     display: block;
+  }
+
+  /* ── 1920×1080 canvas (always this size, scaled to fit stage) ── */
+  .slide-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 1920px;
+    height: 1080px;
+    transform-origin: top left;
+    font-size: 20px;
   }
 
   /* ── Slide ── */
@@ -146,31 +173,33 @@ const STYLES = `
   .playing .emph-label        { display: none; }
   .playing .emph-indicator    { border-left: none; padding-left: 0; gap: 0; }
 
-  /* ── Inject block ── */
-  .inject-slot {
-    border: 1px dashed rgba(120, 180, 255, 0.35);
-    border-radius: 4px;
+  /* ── Plugin block ── */
+  .plugin-slot {
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
+    position: relative;
     display: flex;
     flex-direction: column;
-    min-height: 5em;
-    position: relative;
   }
-  .inject-placeholder {
+  /* Subtle editing decoration: dashed border + filename — hidden during playback */
+  .plugin-label {
     position: absolute; inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5em;
-    font-size: 0.65em;
-    opacity: 0.45;
+    border: 1px dashed rgba(120, 180, 255, 0.25);
+    border-radius: 4px;
+    font-size: 0.55em;
+    opacity: 0.4;
     pointer-events: none;
+    font-style: italic;
   }
-  .inject-output {
-    flex: 1;
+  .plugin-output {
+    position: absolute; inset: 0;
     overflow: hidden;
-    position: relative;
   }
+  .playing .plugin-label { display: none; }
 
   /* ── Nav ── */
   .nav {
@@ -194,20 +223,53 @@ const STYLES = `
   .nav-btn:disabled { opacity: 0.3; cursor: default; }
   .slide-count { font-size: 12px; color: var(--text-muted); }
   .slide-meta  { font-size: 11px; color: var(--text-dim); text-align: right; }
-  .empty-msg   { color: #333; font-size: 13px; text-align: center; }
+  .empty-msg   { color: #555; font-size: 26px; text-align: center; }
+
+  /* ── Fullscreen button ── */
+  .fullscreen-btn {
+    position: absolute;
+    top: 8px; right: 8px;
+    background: rgba(0,0,0,0.45);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 4px;
+    color: rgba(255,255,255,0.5);
+    font-size: 14px;
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    z-index: 10;
+    padding: 0;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s;
+  }
+  .fullscreen-btn:hover { background: rgba(0,0,0,0.75); color: rgba(255,255,255,0.9); }
 `;
 
 // ── Component ────────────────────────────────────────────────────────────────
 
 class SlidePreview extends HTMLElement {
-  #slides    = [];
-  #index     = 0;
-  #slideTime = -1;      // -1 = not in playback
-  #injectCache = new Map();  // file → module default export fn
+  #slides        = [];
+  #index         = 0;
+  #slideTime     = -1;      // -1 = not in playback
+  #pluginCache   = new Map();  // file → module default export fn
+  #pluginLoading = new Set();  // files currently being imported
+  #resizeObs     = null;
+  _fsHandler     = null;
 
   constructor() { super(); this.attachShadow({ mode: 'open' }); }
 
-  connectedCallback() { this.#renderFull(); }
+  connectedCallback() {
+    this.#renderFull();
+    this.#resizeObs = new ResizeObserver(() => this.#updateScale());
+    this.#resizeObs.observe(this);
+    this._fsHandler = () => requestAnimationFrame(() => this.#updateScale());
+    document.addEventListener('fullscreenchange', this._fsHandler);
+  }
+
+  disconnectedCallback() {
+    this.#resizeObs?.disconnect();
+    document.removeEventListener('fullscreenchange', this._fsHandler);
+  }
 
   set slides(val) {
     this.#slides    = Array.isArray(val) ? val : [];
@@ -226,6 +288,21 @@ class SlidePreview extends HTMLElement {
     this.#updateTiming();
   }
 
+  // ── Scale the 1920×1080 canvas to fit the stage ────────────────────────────
+
+  #updateScale() {
+    const stage  = this.shadowRoot?.querySelector('.stage');
+    const canvas = this.shadowRoot?.querySelector('.slide-canvas');
+    if (!stage || !canvas) return;
+    const scaleX = stage.clientWidth  / 1920;
+    const scaleY = stage.clientHeight / 1080;
+    const scale  = Math.min(scaleX, scaleY);
+    // Translate to center when letterboxing (e.g. fullscreen on non-16:9 display)
+    const tx = (stage.clientWidth  - 1920 * scale) / 2;
+    const ty = (stage.clientHeight - 1080 * scale) / 2;
+    canvas.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  }
+
   // ── Full render ────────────────────────────────────────────────────────────
 
   #renderFull() {
@@ -235,8 +312,11 @@ class SlidePreview extends HTMLElement {
     const idx   = this.#index;
 
     sr.innerHTML = `<style>${STYLES}</style>
-      <div class="stage">
-        ${slide ? this.#buildSlide(slide) : `<div style="display:flex;align-items:center;justify-content:center;height:100%"><div class="empty-msg">No slides yet — write some above.</div></div>`}
+      <div class="stage" id="stage">
+        <div class="slide-canvas" id="slide-canvas">
+          ${slide ? this.#buildSlide(slide) : `<div style="display:flex;align-items:center;justify-content:center;height:100%"><div class="empty-msg">No slides yet.</div></div>`}
+        </div>
+        <button class="fullscreen-btn" id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
       </div>
       ${slide ? `<div class="slide-meta">${slide.duration}s</div>` : ''}
       <div class="nav">
@@ -251,6 +331,15 @@ class SlidePreview extends HTMLElement {
     sr.querySelector('#btn-next')?.addEventListener('click', () => {
       if (this.#index < this.#slides.length - 1) { this.#index++; this.#slideTime = -1; this.#renderFull(); }
     });
+    sr.querySelector('#btn-fullscreen')?.addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        this.requestFullscreen?.().catch(() => {});
+      } else {
+        document.exitFullscreen?.();
+      }
+    });
+
+    requestAnimationFrame(() => this.#updateScale());
   }
 
   // ── Build slide HTML ───────────────────────────────────────────────────────
@@ -315,8 +404,8 @@ class SlidePreview extends HTMLElement {
       case 'emph':
         return this.#buildEmph(b, textColor, bid);
 
-      case 'inject':
-        return this.#buildInject(b, bid);
+      case 'plugin':
+        return this.#buildPlugin(b, bid);
 
       default:
         return '';
@@ -341,8 +430,6 @@ class SlidePreview extends HTMLElement {
   }
 
   #buildEmph(b, textColor, bid) {
-    // During editing (no slideTime): show with visual indicator showing timing info
-    // During playback: emph-mode class on slide-body handles dimming via CSS
     const inner = this.#buildBody(b.blocks, textColor, `${bid}-emph`);
     return `<div class="emph-indicator block is-emph" data-block="${bid}"
                data-emph-start="${b.start}" data-emph-dur="${b.duration}">
@@ -351,15 +438,12 @@ class SlidePreview extends HTMLElement {
     </div>`;
   }
 
-  #buildInject(b, bid) {
-    const dataAttr = b.dataFile ? ` data-inject-data="${escAttr(b.dataFile)}"` : '';
-    const label    = b.dataFile ? `${escHtml(b.file)} + ${escHtml(b.dataFile)}` : escHtml(b.file);
-    return `<div class="inject-slot block" data-block="${bid}"
-               data-inject-file="${escAttr(b.file)}"
-               data-inject-start="${b.start}"
-               data-inject-dur="${b.duration}"${dataAttr}>
-      <div class="inject-placeholder">&#x2756; ${label} — at ${b.start}s for ${b.duration}s</div>
-      <div class="inject-output"></div>
+  #buildPlugin(b, bid) {
+    const dataAttr = b.dataFile ? ` data-plugin-data="${escAttr(b.dataFile)}"` : '';
+    return `<div class="plugin-slot block" data-block="${bid}"
+               data-plugin-file="${escAttr(b.file)}"${dataAttr}>
+      <div class="plugin-label">plugin: ${escHtml(b.file)}</div>
+      <div class="plugin-output"></div>
     </div>`;
   }
 
@@ -383,48 +467,73 @@ class SlidePreview extends HTMLElement {
     }
     body.classList.toggle('emph-active', emphActive && t >= 0);
 
-    // — Inject slots —
-    const slots = body.querySelectorAll('.inject-slot');
+    // — Plugin slots —
+    // Each plugin is activated once when playback begins; it manages its own timing.
+    // When playback stops (t < 0), the output is cleared so next play starts fresh.
+    const slots = body.querySelectorAll('.plugin-slot');
     for (const slot of slots) {
-      const start    = parseFloat(slot.dataset.injectStart);
-      const dur      = parseFloat(slot.dataset.injectDur);
-      const file     = slot.dataset.injectFile;
-      const output   = slot.querySelector('.inject-output');
-      const ph       = slot.querySelector('.inject-placeholder');
-      const isActive = t >= 0 && t >= start && t < start + dur;
-
-      if (isActive) {
-        slot.dataset._wasActive = '1';
-        ph.style.display = 'none';
-        const dataFile = slot.dataset.injectData || null;
-        this.#callInject(file, dataFile, slot, output, t - start, dur - (t - start));
-      } else if (slot.dataset._wasActive) {
-        // Just became inactive — clear output
-        delete slot.dataset._wasActive;
-        output.innerHTML = '';
-        ph.style.display = '';
+      const output = slot.querySelector('.plugin-output');
+      if (t < 0) {
+        if (slot.dataset._pluginActive) {
+          delete slot.dataset._pluginActive;
+          output.innerHTML = '';
+        }
+        continue;
+      }
+      if (!slot.dataset._pluginActive) {
+        slot.dataset._pluginActive = '1';
+        this.#callPlugin(slot.dataset.pluginFile, slot.dataset.pluginData || null, slot, output);
       }
     }
   }
 
-  async #callInject(file, dataFile, slot, outputEl, time, remaining) {
+  // ── Invoke a plugin module (called once per playback activation) ──────────
+  //
+  // Plugin contract:
+  //   export default function(inFn, outFn, dataFn?) { ... }
+  //
+  //   inFn() → { width, height, timeInSlide, remaining }
+  //     width/height  — slot dimensions in canvas pixels (1920×1080 space)
+  //     timeInSlide   — seconds elapsed in the current slide
+  //     remaining     — seconds left in the slide
+  //
+  //   outFn(el) — call once to place your root element; use RAF + inFn() for animation.
+  //     Check el.isConnected in your RAF loop to know when to stop.
+  //
+  //   dataFn(name?) — fetch Response for a file in _inject/ (only if data arg given)
+
+  async #callPlugin(file, dataFile, slot, outputEl) {
     try {
-      if (!this.#injectCache.has(file)) {
-        const mod = await import(`/api/inject/${encodeURIComponent(file)}`);
-        this.#injectCache.set(file, mod.default);
+      if (!this.#pluginCache.has(file)) {
+        if (this.#pluginLoading.has(file)) return;
+        this.#pluginLoading.add(file);
+        try {
+          const mod = await import(`/api/inject/${encodeURIComponent(file)}`);
+          this.#pluginCache.set(file, mod.default);
+        } finally {
+          this.#pluginLoading.delete(file);
+        }
+        // After async load, verify playback is still active and slot is still in DOM
+        if (this.#slideTime < 0 || !slot.isConnected) return;
       }
-      const fn = this.#injectCache.get(file);
+
+      const fn = this.#pluginCache.get(file);
       if (typeof fn !== 'function') return;
 
-      const rect   = slot.getBoundingClientRect();
-      const inFn   = () => ({ width: rect.width, height: rect.height, time, remaining });
-      const outFn  = el => { outputEl.innerHTML = ''; outputEl.appendChild(el); };
+      const self  = this;
+      const inFn  = () => ({
+        width:       slot.offsetWidth,
+        height:      slot.offsetHeight,
+        timeInSlide: self.#slideTime,
+        remaining:   Math.max(0, (self.#slides[self.#index]?.duration ?? 0) - self.#slideTime),
+      });
+      const outFn = el => { outputEl.innerHTML = ''; if (el) outputEl.appendChild(el); };
       const dataFn = dataFile
         ? (name) => fetch(`/api/inject/${encodeURIComponent(name ?? dataFile)}`)
         : null;
       fn(inFn, outFn, dataFn);
     } catch (e) {
-      outputEl.textContent = `inject error: ${e.message}`;
+      outputEl.textContent = `plugin error: ${e.message}`;
     }
   }
 }

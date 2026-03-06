@@ -480,8 +480,8 @@ class ModuleEditor extends HTMLElement {
           <button class="modal-close" id="files-close">&times;</button>
           <h2>Project Files &mdash; _inject/</h2>
           <p style="font-size:12px;color:var(--text-dim);margin:0 0 12px">
-            JS files can be referenced with <code>@inject file.js</code>.
-            Data files can be passed as a second arg: <code>@inject chart.js 0 5 data.json</code>.
+            JS plugin files can be referenced with <code>@plugin file.js</code>.
+            A data file can be passed as a second arg: <code>@plugin chart.js data.json</code>.
             These files are shared across all courses and modules.
           </p>
           <div class="file-list">${rows}</div>
@@ -585,11 +585,12 @@ class ModuleEditor extends HTMLElement {
           <h3>Emphasis (timed spotlight)</h3>
           <pre>@emph 2 3\nThis content is highlighted at 2s for 3s.\nAll other slide content fades.\n@end</pre>
 
-          <h3>Inject (external JS content)</h3>
-          <pre>@inject chart.js 4 6\n@inject chart.js 4 6 data.json\n@inject "my chart.js" 4 6 "sales data.json"</pre>
-          <p>Calls <code>_inject/chart.js</code> at 4s for 6s. Optional 4th arg is the default data file.
+          <h3>Plugin (external JS content)</h3>
+          <pre>@plugin chart.js\n@plugin chart.js data.json\n@plugin "my chart.js" "sales data.json"</pre>
+          <p>Loads <code>_inject/chart.js</code> and calls it when playback reaches this slide.
+          Optional second arg is a default data file passed as <code>dataFn</code>.
           Use the <strong>Files</strong> button to manage files in <code>_inject/</code>. Quote filenames that contain spaces.</p>
-          <pre>export default function(inFn, outFn, dataFn) {\n  const { width, height, time, remaining } = inFn();\n  const el = document.createElement('div');\n  el.textContent = 'Custom content';\n  outFn(el);\n  // dataFn?.()              → fetch Response for default data file\n  // dataFn?.("other.bin")  → fetch Response for any file in _inject/\n  // call .text()/.json()/.arrayBuffer()/.blob() on the Response\n}</pre>
+          <pre>export default function(inFn, outFn, dataFn) {\n  const el = document.createElement('div');\n  outFn(el); // place your element once\n  function tick() {\n    if (!el.isConnected) return; // slide changed — stop\n    const { width, height, timeInSlide, remaining } = inFn();\n    // update el based on time...\n    requestAnimationFrame(tick);\n  }\n  tick();\n  // dataFn?.()              → fetch Response for default data file\n  // dataFn?.("other.bin")  → fetch Response for any file in _inject/\n}</pre>
 
         </div>
       </div>`;
