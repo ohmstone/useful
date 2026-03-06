@@ -130,7 +130,7 @@ function _parseSlide(duration, text) {
       const sp    = rest.search(/\s/);
       const cmd   = sp >= 0 ? rest.slice(0, sp) : rest;
       const args  = sp >= 0 ? rest.slice(sp + 1).trim() : '';
-      const ap    = args.split(/\s+/).filter(Boolean);
+      const ap    = _parseArgs(args);
 
       if (cmd === 'header') {
         const pipe = args.indexOf('|');
@@ -156,7 +156,7 @@ function _parseSlide(duration, text) {
           colIdx++;
         }
 
-      } else if (cmd === 'end') {
+      } else if (cmd === 'end' || cmd.startsWith('end:')) {
         if (inEmph) {
           const eb = { type: 'emph', start: emphStart, duration: emphDur, blocks: emphBlocks };
           inEmph = false; emphBlocks = [];
@@ -172,8 +172,13 @@ function _parseSlide(duration, text) {
         emphDur    = parseFloat(ap[1]) || 1;
         emphBlocks = [];
 
+      } else if (cmd === 'image') {
+        const file = ap[0] || '';
+        const fit  = ap[1] || 'contain';
+        target().push({ type: 'image', src: `/api/inject/${encodeURIComponent(file)}`, alt: '', fit, ...takeStyle() });
+
       } else if (cmd === 'inject') {
-        target().push({ type: 'inject', file: ap[0] || '', start: parseFloat(ap[1]) || 0, duration: parseFloat(ap[2]) || 1 });
+        target().push({ type: 'inject', file: ap[0] || '', start: parseFloat(ap[1]) || 0, duration: parseFloat(ap[2]) || 1, dataFile: ap[3] || null });
       }
       continue;
     }
@@ -200,13 +205,6 @@ function _parseSlide(duration, text) {
     if (t.startsWith('# ')) {
       flush();
       target().push({ type: 'heading', level: 1, spans: parseInline(t.slice(2)), ...takeStyle() });
-      continue;
-    }
-
-    // ── Image ────────────────────────────────────────────────────────────
-    if (/^!\[/.test(t)) {
-      flush();
-      target().push(_parseImage(t, takeStyle()));
       continue;
     }
 
@@ -253,6 +251,30 @@ function _parseSlide(duration, text) {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// Split a directive argument string respecting single/double quoted tokens.
+// e.g. '"my file.js" 2 5 "sales data.json"' → ['my file.js', '2', '5', 'sales data.json']
+function _parseArgs(str) {
+  const args = [];
+  let i = 0;
+  while (i < str.length) {
+    while (i < str.length && /\s/.test(str[i])) i++;
+    if (i >= str.length) break;
+    const q = str[i];
+    if (q === '"' || q === "'") {
+      i++;
+      const start = i;
+      while (i < str.length && str[i] !== q) i++;
+      args.push(str.slice(start, i));
+      if (i < str.length) i++;
+    } else {
+      const start = i;
+      while (i < str.length && !/\s/.test(str[i])) i++;
+      args.push(str.slice(start, i));
+    }
+  }
+  return args;
+}
+
 function _buildCols(bodies, bgs, width1) {
   const n = bodies.length;
   return bodies.map((blocks, i) => ({
@@ -277,12 +299,6 @@ function _parseStyleHint(raw) {
     else if (t.startsWith('color:')) { s.color = t.slice(6); found = true; }
   }
   return found ? s : null;
-}
-
-function _parseImage(line, style) {
-  const m = line.match(/^!\[([^\]]*)\]\(([^)]*)\)\s*(.*)$/);
-  if (!m) return { type: 'paragraph', spans: parseInline(line), ...style };
-  return { type: 'image', alt: m[1], src: m[2], fit: m[3].trim() || 'contain', ...style };
 }
 
 // ── Inline parser ─────────────────────────────────────────────────────────────

@@ -61,7 +61,7 @@ const STYLES = `
   .play-btn:hover { background: var(--accent); border-color: var(--accent); }
   .play-btn.playing { background: var(--danger); border-color: var(--danger); }
 
-  .syntax-btn {
+  .syntax-btn, .files-btn {
     background: none;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -72,7 +72,7 @@ const STYLES = `
     cursor: pointer;
     transition: color 0.15s, border-color 0.15s;
   }
-  .syntax-btn:hover { color: var(--text); border-color: var(--accent); }
+  .syntax-btn:hover, .files-btn:hover { color: var(--text); border-color: var(--accent); }
 
   /* ── Syntax reference modal ── */
   .modal-backdrop {
@@ -121,6 +121,40 @@ const STYLES = `
   .ref td:first-child { color: var(--text-dim); white-space: nowrap; }
   .ref code { font-family: 'JetBrains Mono','Fira Code',monospace; font-size: 1em; background: rgba(255,255,255,0.06); padding: 1px 4px; border-radius: 3px; }
   .ref pre { margin: 6px 0; background: rgba(0,0,0,0.3); border-radius: 4px; padding: 8px 12px; white-space: pre; overflow-x: auto; font-family: 'JetBrains Mono','Fira Code',monospace; font-size: 0.85em; line-height: 1.6; }
+
+  /* ── File manager modal ── */
+  .file-list { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+  .file-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 10px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 12px;
+  }
+  .file-name { flex: 1; font-family: 'JetBrains Mono','Fira Code',monospace; color: var(--text); }
+  .file-size { color: var(--text-dim); white-space: nowrap; }
+  .file-del {
+    background: none; border: none; color: var(--text-dim);
+    cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1;
+    transition: color 0.15s;
+  }
+  .file-del:hover { color: var(--danger); }
+  .file-empty { font-size: 12px; color: var(--text-dim); padding: 8px 0; }
+  .file-upload-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  }
+  .file-upload-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-muted);
+    font-size: 12px; font-family: var(--font);
+    padding: 5px 12px; cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .file-upload-btn:hover { color: var(--text); border-color: var(--accent); }
+  .file-upload-note { font-size: 11px; color: var(--text-dim); }
 
   .save-status {
     font-size: 11px;
@@ -347,6 +381,7 @@ class ModuleEditor extends HTMLElement {
       <div class="editor-nav">
         <button class="back-btn" id="btn-back">← Back</button>
         <span class="save-status" id="save-status">${esc(this.#saveStatus)}</span>
+        <button class="files-btn" id="btn-files">Files</button>
         <button class="syntax-btn" id="btn-syntax">? Syntax</button>
         <button class="play-btn" id="btn-play">▶ Play</button>
       </div>
@@ -411,9 +446,81 @@ class ModuleEditor extends HTMLElement {
       this.dispatchEvent(new CustomEvent('nav-back', { bubbles: true, composed: true }));
     });
 
+    // Files modal
+    sr.querySelector('#btn-files').addEventListener('click', () => this.#showFilesModal());
+
     // Syntax reference modal
     sr.querySelector('#btn-syntax').addEventListener('click', () => this.#showSyntaxModal());
   }
+  async #showFilesModal() {
+    const sr = this.shadowRoot;
+    if (sr.querySelector('#files-modal-backdrop')) return;
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'files-modal-backdrop';
+    backdrop.className = 'modal-backdrop';
+
+    const renderModal = async () => {
+      let files = [];
+      try {
+        files = await fetch('/api/inject').then(r => r.json());
+      } catch { /* ignore */ }
+
+      const rows = files.length
+        ? files.map(f => `
+            <div class="file-row">
+              <span class="file-name">${esc(f.name)}</span>
+              <span class="file-size">${fmtSize(f.size)}</span>
+              <button class="file-del" data-name="${esc(f.name)}" title="Delete">&times;</button>
+            </div>`).join('')
+        : `<div class="file-empty">No files yet. Upload JS modules or data files below.</div>`;
+
+      backdrop.innerHTML = `
+        <div class="modal">
+          <button class="modal-close" id="files-close">&times;</button>
+          <h2>Project Files &mdash; _inject/</h2>
+          <p style="font-size:12px;color:var(--text-dim);margin:0 0 12px">
+            JS files can be referenced with <code>@inject file.js</code>.
+            Data files can be passed as a second arg: <code>@inject chart.js 0 5 data.json</code>.
+            These files are shared across all courses and modules.
+          </p>
+          <div class="file-list">${rows}</div>
+          <div class="file-upload-row">
+            <button class="file-upload-btn" id="files-pick">+ Upload file</button>
+            <span class="file-upload-note">Any file type. JS files are loaded as ES modules.</span>
+          </div>
+          <input type="file" id="files-input" style="display:none" multiple>
+        </div>`;
+
+      backdrop.addEventListener('click', e => { if (e.target === backdrop) backdrop.remove(); });
+      backdrop.querySelector('#files-close').addEventListener('click', () => backdrop.remove());
+
+      backdrop.querySelector('#files-pick').addEventListener('click', () => {
+        backdrop.querySelector('#files-input').click();
+      });
+
+      backdrop.querySelector('#files-input').addEventListener('change', async e => {
+        for (const file of e.target.files) {
+          await fetch(`/api/inject/${encodeURIComponent(file.name)}`, {
+            method: 'POST',
+            body: file,
+          }).catch(() => {});
+        }
+        await renderModal();
+      });
+
+      backdrop.querySelectorAll('.file-del').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          await fetch(`/api/inject/${encodeURIComponent(btn.dataset.name)}`, { method: 'DELETE' });
+          await renderModal();
+        });
+      });
+    };
+
+    await renderModal();
+    sr.appendChild(backdrop);
+  }
+
   #showSyntaxModal() {
     const sr = this.shadowRoot;
     if (sr.querySelector('.modal-backdrop')) return;
@@ -465,8 +572,8 @@ class ModuleEditor extends HTMLElement {
           </table>
 
           <h3>Images</h3>
-          <pre>![alt text](https://example.com/image.png) cover\n![alt text](./photo.jpg) contain\n![alt text](./logo.png) 40%</pre>
-          <p>Fit options: <code>cover</code> (fill, crop) &middot; <code>contain</code> (show whole image) &middot; <code>50%</code> (explicit width)</p>
+          <pre>@image hero.jpg cover\n@image diagram.png contain\n@image "team photo.jpg" fill</pre>
+          <p>File must be in <code>_inject/</code> (use <strong>Files</strong> to upload). Image takes remaining slide height. Fit: <code>contain</code> (letterbox, default) &middot; <code>cover</code> (fill+crop) &middot; <code>fill</code> (stretch) &middot; <code>none</code> (natural size). Quote filenames with spaces.</p>
 
           <h3>Code blocks</h3>
           <pre>\`\`\`python\ndef hello():\n    print("hi")\n\`\`\`</pre>
@@ -479,10 +586,10 @@ class ModuleEditor extends HTMLElement {
           <pre>@emph 2 3\nThis content is highlighted at 2s for 3s.\nAll other slide content fades.\n@end</pre>
 
           <h3>Inject (external JS content)</h3>
-          <pre>@inject chart.js 4 6</pre>
-          <p>Loads <code>_inject/chart.js</code> from the project directory and calls it at 4s for 6s.
-          Place <code>.js</code> files in <code>_inject/</code> in your project folder.</p>
-          <pre>// _inject/chart.js\nexport default function(inFn, outFn) {\n  const { width, height, time, remaining } = inFn();\n  const el = document.createElement('div');\n  el.textContent = 'Custom content here';\n  outFn(el); // renders in the allocated slide area\n}</pre>
+          <pre>@inject chart.js 4 6\n@inject chart.js 4 6 data.json\n@inject "my chart.js" 4 6 "sales data.json"</pre>
+          <p>Calls <code>_inject/chart.js</code> at 4s for 6s. Optional 4th arg is the default data file.
+          Use the <strong>Files</strong> button to manage files in <code>_inject/</code>. Quote filenames that contain spaces.</p>
+          <pre>export default function(inFn, outFn, dataFn) {\n  const { width, height, time, remaining } = inFn();\n  const el = document.createElement('div');\n  el.textContent = 'Custom content';\n  outFn(el);\n  // dataFn?.()              → fetch Response for default data file\n  // dataFn?.("other.bin")  → fetch Response for any file in _inject/\n  // call .text()/.json()/.arrayBuffer()/.blob() on the Response\n}</pre>
 
         </div>
       </div>`;
@@ -495,6 +602,9 @@ class ModuleEditor extends HTMLElement {
 const enc = encodeURIComponent;
 function esc(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function fmtSize(n) {
+  return n < 1024 ? `${n}B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)}KB` : `${(n / 1024 / 1024).toFixed(1)}MB`;
 }
 
 customElements.define('module-editor', ModuleEditor);

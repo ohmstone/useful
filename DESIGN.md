@@ -65,7 +65,7 @@ extra/
 <projectDir>/
   _voice.json                   # { "voice": "<name>" }  — active TTS voice preference
   _voices/                      # Persistent custom voice WAV files (<name>.wav)
-  _inject/                      # Custom JS inject modules (<name>.js) — served via /api/inject/:file
+  _inject/                      # Project asset files: inject JS modules, images, data files — served via /api/inject/:file
   # underscore-prefixed entries = project-level metadata; course names may NOT start with _
   <course>/
     modules.json                # ["module-name", ...]  (ordered)
@@ -111,9 +111,14 @@ which returns a typed AST. The renderer in [slide-preview.js](core/components/sl
 consumes the AST and supports timing-aware features (emph dimming, inject invocation).
 
 **Block types:** `paragraph`, `heading` (level 1/2), `list` (ordered/unordered),
-`image` (cover/contain/%), `code`, `columns`, `emph` (timed), `inject` (timed, external JS).
+`image` (via `@image filename fit`; file served from `_inject/`), `code`, `columns`, `emph` (timed), `inject` (timed, external JS).
 
-**Inline spans:** `text`, `bold`, `italic`, `underline`, `image` (inline).
+**Inline spans:** `text`, `bold`, `italic`, `underline`, `image` (inline `![alt](src)` in span context only).
+
+**Directive argument quoting:** any directive arg can be single- or double-quoted to support filenames
+with spaces: `@inject "my chart.js" 2 5 "sales data.json"`.
+
+**`dataFn` in inject modules:** `dataFn()` → `Response` for the default data file; `dataFn("name")` → `Response` for any named file in `_inject/`. Caller chooses `.text()` / `.json()` / `.arrayBuffer()` / `.blob()`.
 
 **Style hints:** `{big}`, `{small}`, `{center}`, `{right}`, `{color:value}` — placed
 on their own line, apply to the next block.
@@ -171,8 +176,10 @@ and re-registered automatically on each startup.
 | DELETE | `/api/voices/:name` | — | 204 | Remove custom voice (server + disk) |
 | GET | `/api/voice` | — | `{ voice: string }` | Get active voice preference for project |
 | PUT | `/api/voice` | `{ voice }` | 204 | Set active voice preference for project |
-| GET | `/api/inject` | — | `string[]` | List `.js` files in `<projectDir>/_inject/` |
-| GET | `/api/inject/:file` | — | `application/javascript` | Serve inject JS module |
+| GET | `/api/inject` | — | `{ name, size }[]` | List all files in `<projectDir>/_inject/` |
+| GET | `/api/inject/:file` | — | (varies) | Serve any file from `_inject/` with correct MIME |
+| POST | `/api/inject/:file` | raw body | 200 | Upload/overwrite file in `_inject/` |
+| DELETE | `/api/inject/:file` | — | 204 | Delete file from `_inject/` |
 
 ### Static file serving
 

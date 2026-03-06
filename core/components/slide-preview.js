@@ -63,15 +63,14 @@ const STYLES = `
   /* ── Columns ── */
   .columns {
     display: flex;
-    flex: 1;
-    min-height: 0;
+    width: 100%;
     overflow: hidden;
   }
   .col-inner {
     flex: 1;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
     padding: 4% 5%;
     gap: 0.5em;
     overflow: hidden;
@@ -114,11 +113,8 @@ const STYLES = `
   }
 
   /* ── Block: image ── */
-  .img-wrap      { display: flex; justify-content: center; align-items: center; overflow: hidden; }
-  .img-wrap.cover   { flex: 1; }
-  .img-wrap img  { display: block; }
-  .img-cover     { width: 100%; height: 100%; object-fit: cover; }
-  .img-contain   { max-width: 100%; max-height: 14em; object-fit: contain; }
+  .img-wrap     { flex: 1; min-height: 4em; overflow: hidden; }
+  .img-wrap img { display: block; width: 100%; height: 100%; }
 
   /* ── Inline styles ── */
   strong { font-weight: 700; }
@@ -141,9 +137,14 @@ const STYLES = `
   }
 
   /* ── Emph dimming (active during playback) ── */
-  .emph-active .block:not(.is-emph) { opacity: 0.1; transition: opacity 0.25s; }
-  .emph-active .block.is-emph       { opacity: 1;   transition: opacity 0.25s; }
+  /* Use > so only direct children of slide-body are dimmed, not blocks nested inside columns */
+  .emph-active > .block:not(.is-emph) { opacity: 0.1; transition: opacity 0.25s; }
+  .emph-active > .block.is-emph       { opacity: 1;   transition: opacity 0.25s; }
   .block { transition: opacity 0.25s; }
+
+  /* Hide editing decoration during playback */
+  .playing .emph-label        { display: none; }
+  .playing .emph-indicator    { border-left: none; padding-left: 0; gap: 0; }
 
   /* ── Inject block ── */
   .inject-slot {
@@ -323,16 +324,9 @@ class SlidePreview extends HTMLElement {
   }
 
   #buildImage(b, bid) {
-    const isPercent = /^\d+(\.\d+)?%$/.test(b.fit);
-    const isCover   = b.fit === 'cover';
-    if (isCover) {
-      return `<div class="img-wrap cover block" data-block="${bid}" style="flex:1">
-        <img class="img-cover" src="${escAttr(b.src)}" alt="${escAttr(b.alt)}">
-      </div>`;
-    }
-    const width = isPercent ? `width:${b.fit}` : '';
+    const fit = ['contain', 'cover', 'fill', 'none'].includes(b.fit) ? b.fit : 'contain';
     return `<div class="img-wrap block" data-block="${bid}">
-      <img class="img-contain" src="${escAttr(b.src)}" alt="${escAttr(b.alt)}" style="${width ? `max-width:${b.fit};height:auto` : ''}">
+      <img src="${escAttr(b.src)}" alt="${escAttr(b.alt)}" style="object-fit:${fit}">
     </div>`;
   }
 
@@ -358,11 +352,13 @@ class SlidePreview extends HTMLElement {
   }
 
   #buildInject(b, bid) {
+    const dataAttr = b.dataFile ? ` data-inject-data="${escAttr(b.dataFile)}"` : '';
+    const label    = b.dataFile ? `${escHtml(b.file)} + ${escHtml(b.dataFile)}` : escHtml(b.file);
     return `<div class="inject-slot block" data-block="${bid}"
                data-inject-file="${escAttr(b.file)}"
                data-inject-start="${b.start}"
-               data-inject-dur="${b.duration}">
-      <div class="inject-placeholder">&#x2756; ${escHtml(b.file)} — at ${b.start}s for ${b.duration}s</div>
+               data-inject-dur="${b.duration}"${dataAttr}>
+      <div class="inject-placeholder">&#x2756; ${label} — at ${b.start}s for ${b.duration}s</div>
       <div class="inject-output"></div>
     </div>`;
   }
@@ -374,6 +370,8 @@ class SlidePreview extends HTMLElement {
     const body = sr?.querySelector('#slide-body');
     if (!body) return;
     const t = this.#slideTime;
+
+    body.classList.toggle('playing', t >= 0);
 
     // — Emph dimming —
     const emphEls  = body.querySelectorAll('[data-emph-start]');
@@ -398,7 +396,8 @@ class SlidePreview extends HTMLElement {
       if (isActive) {
         slot.dataset._wasActive = '1';
         ph.style.display = 'none';
-        this.#callInject(file, slot, output, t - start, dur - (t - start));
+        const dataFile = slot.dataset.injectData || null;
+        this.#callInject(file, dataFile, slot, output, t - start, dur - (t - start));
       } else if (slot.dataset._wasActive) {
         // Just became inactive — clear output
         delete slot.dataset._wasActive;
@@ -408,7 +407,7 @@ class SlidePreview extends HTMLElement {
     }
   }
 
-  async #callInject(file, slot, outputEl, time, remaining) {
+  async #callInject(file, dataFile, slot, outputEl, time, remaining) {
     try {
       if (!this.#injectCache.has(file)) {
         const mod = await import(`/api/inject/${encodeURIComponent(file)}`);
@@ -417,10 +416,13 @@ class SlidePreview extends HTMLElement {
       const fn = this.#injectCache.get(file);
       if (typeof fn !== 'function') return;
 
-      const rect  = slot.getBoundingClientRect();
-      const inFn  = () => ({ width: rect.width, height: rect.height, time, remaining });
-      const outFn = el => { outputEl.innerHTML = ''; outputEl.appendChild(el); };
-      fn(inFn, outFn);
+      const rect   = slot.getBoundingClientRect();
+      const inFn   = () => ({ width: rect.width, height: rect.height, time, remaining });
+      const outFn  = el => { outputEl.innerHTML = ''; outputEl.appendChild(el); };
+      const dataFn = dataFile
+        ? (name) => fetch(`/api/inject/${encodeURIComponent(name ?? dataFile)}`)
+        : null;
+      fn(inFn, outFn, dataFn);
     } catch (e) {
       outputEl.textContent = `inject error: ${e.message}`;
     }
