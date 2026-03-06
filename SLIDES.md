@@ -399,7 +399,7 @@ You can also place files there manually — they are served from `GET /api/injec
 
 ## Complete example
 
-```
+````
 === 8
 @header Introduction to Parsing | Lesson 2
 @bg linear-gradient(160deg, #0d1b2a, #1b263b)
@@ -471,7 +471,7 @@ __Structure is just pattern recognition.__
 - *Simplicity* matters for maintainability
 
 @plugin timeline.js
-```
+````
 
 ---
 
