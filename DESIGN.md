@@ -33,21 +33,23 @@ Port defaults to **7700**, auto-increments if busy (scans up to +50).
 ```
 app.ts                          # Deno HTTP server, all routes, no dependencies
 deno.json                       # Activates Deno LS in IDE; defines dev task
+SLIDES.md                       # Slide language reference (human + LLM readable)
 core/
   index.html                    # SPA shell — mounts <app-root>, loads fonts + CSS
   style.css                     # CSS custom properties (theme tokens) + global reset
   main.js                       # ES module entry; imports all components (leaves first)
+  slide-parser.js               # Slide language parser — parseSlides(text) → AST; parseInline(text) → spans
   components/
     course-card.js              # <course-card>    — displays one course; dispatches course-open
     course-list.js              # <course-list>    — course grid + search + new-course form
     course-view.js              # <course-view>    — ordered module list; drag-to-reorder
     dir-browser.js              # <dir-browser>    — filesystem navigator
     dir-picker.js               # <dir-picker>     — first-run setup shell
-    slide-preview.js            # <slide-preview>  — 16:9 slide display + nav; exports parseSlides()
+    slide-preview.js            # <slide-preview>  — fixed 1920×1080 canvas scaled to stage; emph/plugin timing; fullscreen
     audio-track.js              # <audio-track>    — horizontal timeline; clips draggable to reposition
     audio-editor.js             # <audio-editor>   — waveform editor; cut/silence regions; saves WAV
     audio-library.js            # <audio-library>  — TTS + voice selector + clip list; Edit opens audio-editor
-    module-editor.js            # <module-editor>  — full editing view; imports parseSlides; playback
+    module-editor.js            # <module-editor>  — full editing view; imports parseSlides; playback; syntax modal
     app-root.js                 # <app-root>       — top-level shell, state + nav machine
 extra/
   pocket-tts-deno/              # git submodule — OpenAI-compatible TTS server (pocket-tts)
@@ -63,11 +65,12 @@ extra/
 <projectDir>/
   _voice.json                   # { "voice": "<name>" }  — active TTS voice preference
   _voices/                      # Persistent custom voice WAV files (<name>.wav)
+  _inject/                      # Project asset files: inject JS modules, images, data files — served via /api/inject/:file
   # underscore-prefixed entries = project-level metadata; course names may NOT start with _
   <course>/
     modules.json                # ["module-name", ...]  (ordered)
     <module>/
-      slides.txt                # Slide definitions (see format below)
+      slides.txt                # Slide definitions (see format below and SLIDES.md)
       track.json                # [{ file, startTime, duration }]
       audio/
         <timestamp>.wav         # Generated audio clip
@@ -76,18 +79,49 @@ extra/
 
 ### Slides format (`slides.txt`)
 
+See [SLIDES.md](SLIDES.md) for the full language reference.
+
 ```
 === <seconds>
-Slide content here.
-Can be multiple lines.
+@header Left title | Right text
+@bg #1a1a2e
+
+# Heading
+
+Normal paragraph with **bold** and *italic* text.
+
+- Unordered list
+- Another item
+
+@emph 2 3
+Emphasized content (spotlit at 2s for 3s).
+@end
 
 === <seconds>
-Next slide.
+@columns 40
+Left column content.
+@col
+Right column content.
+@end
 ```
 
-Each `=== N` line starts a new slide with duration N seconds. Content follows
-until the next `===` marker. Parsed client-side by `parseSlides()` in
-[slide-preview.js](core/components/slide-preview.js).
+Each `=== N` line starts a new slide with duration N seconds (decimals ok).
+Parsed client-side by `parseSlides()` in [slide-parser.js](core/slide-parser.js),
+which returns a typed AST. The renderer in [slide-preview.js](core/components/slide-preview.js)
+consumes the AST and supports timing-aware features (emph dimming, plugin activation).
+
+**Block types:** `paragraph`, `heading` (level 1/2), `list` (ordered/unordered),
+`image` (via `@image filename fit`; file served from `_inject/`), `code`, `columns`, `emph` (timed), `plugin` (external JS; fills available space, no time window).
+
+**Inline spans:** `text`, `bold`, `italic`, `underline`.
+
+**Directive argument quoting:** any directive arg can be single- or double-quoted to support filenames
+with spaces: `@plugin "my chart.js" "sales data.json"`.
+
+**`dataFn` in plugin modules:** `dataFn()` → `Response` for the default data file; `dataFn("name")` → `Response` for any named file in `_inject/`. Caller chooses `.text()` / `.json()` / `.arrayBuffer()` / `.blob()`.
+
+**Style hints:** `{big}`, `{small}`, `{center}`, `{right}`, `{color:value}` — placed
+on their own line, apply to the next block.
 
 ---
 
@@ -142,6 +176,10 @@ and re-registered automatically on each startup.
 | DELETE | `/api/voices/:name` | — | 204 | Remove custom voice (server + disk) |
 | GET | `/api/voice` | — | `{ voice: string }` | Get active voice preference for project |
 | PUT | `/api/voice` | `{ voice }` | 204 | Set active voice preference for project |
+| GET | `/api/inject` | — | `{ name, size }[]` | List all files in `<projectDir>/_inject/` |
+| GET | `/api/inject/:file` | — | (varies) | Serve any file from `_inject/` with correct MIME |
+| POST | `/api/inject/:file` | raw body | 200 | Upload/overwrite file in `_inject/` |
+| DELETE | `/api/inject/:file` | — | 204 | Delete file from `_inject/` |
 
 ### Static file serving
 
@@ -203,7 +241,7 @@ Navigation events (all `bubbles: true, composed: true`):
 ### Module editor layout
 
 ```
-┌─ nav bar: [← Back] [status] [▶ Play] ───────────────┐
+┌─ nav bar: [← Back] [status] [Files] [? Syntax] [▶ Play] ┐
 │                                                      │
 │  ┌─── Slides (textarea) ──┬─── Preview (16:9) ────┐ │
 │  │ === 5                  │  [slide content]       │ │
@@ -224,6 +262,13 @@ Navigation events (all `bubbles: true, composed: true`):
 Slides auto-save 800ms after the last keystroke. Track width is derived from
 total slide duration.
 
+The **? Syntax** button opens a modal inside the shadow root with the full
+slide language reference. The modal is dismissed by clicking the backdrop or ×.
+
+During playback, `module-editor` passes both `currentIndex` and `slideTime`
+(elapsed seconds within the current slide) to `<slide-preview>`. The preview
+uses `slideTime` for emph dimming and plugin activation without re-rendering.
+
 Drag clips from the Generated Audio list onto the Audio Track.
 Click a track clip once to select it (shows red ✕), click ✕ to delete.
 Clips on the track cannot overlap: drops/moves resolve to before/after the
@@ -243,7 +288,8 @@ conflicting clip; if no valid position exists the action is cancelled.
 - Play button in `<module-editor>` nav bar
 - On play: fetches track clips from API, parses slides, uses `requestAnimationFrame` loop to
   advance slide index and `setTimeout` to schedule audio clips at their `startTime`
-- `<slide-preview>` exposes `set currentIndex(val)` for programmatic control during playback
+- `<slide-preview>` exposes `set currentIndex(val)` and `set slideTime(val)` for programmatic control during playback
+- `set slideTime(t)` triggers an incremental update (no full re-render): updates emph dimming CSS class and activates plugin functions (once per playback start)
 - Stop button cancels RAF, clears timeouts, pauses all audio
 
 ### Audio editing (`<audio-editor>`)

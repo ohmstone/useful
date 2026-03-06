@@ -508,6 +508,64 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
+  // ── Inject files  /api/inject[/:file] ───────────────────────────────────
+
+  if (seg[0] === "api" && seg[1] === "inject") {
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    const injectDir = `${pd}/_inject`;
+
+    // GET /api/inject — list all files with sizes
+    if (seg.length === 2 && method === "GET") {
+      const files: { name: string; size: number }[] = [];
+      try {
+        for await (const e of Deno.readDir(injectDir)) {
+          if (!e.isFile) continue;
+          const stat = await Deno.stat(`${injectDir}/${e.name}`).catch(() => null);
+          files.push({ name: e.name, size: stat?.size ?? 0 });
+        }
+        files.sort((a, b) => a.name.localeCompare(b.name));
+      } catch { /* dir may not exist yet */ }
+      return Response.json(files);
+    }
+
+    // Validate filename for all single-file operations
+    const injectFile = seg.length === 3 ? decodeURIComponent(seg[2]) : null;
+    if (injectFile !== null && (injectFile.includes("..") || injectFile.includes("/") || !injectFile.trim())) {
+      return new Response("Forbidden", { status: 403 });
+    }
+
+    // GET /api/inject/:file — serve any file (JS as module, others by MIME type)
+    if (injectFile && method === "GET") {
+      try {
+        const data = await Deno.readFile(`${injectDir}/${injectFile}`);
+        const ext  = "." + injectFile.split(".").pop()!.toLowerCase();
+        const ct   = MIME[ext] ?? "application/octet-stream";
+        return new Response(data, { headers: { "Content-Type": ct } });
+      } catch { return new Response("Not Found", { status: 404 }); }
+    }
+
+    // POST /api/inject/:file — upload / overwrite a file
+    if (injectFile && method === "POST") {
+      try {
+        await Deno.mkdir(injectDir, { recursive: true });
+        const data = new Uint8Array(await req.arrayBuffer());
+        await Deno.writeFile(`${injectDir}/${injectFile}`, data);
+        return Response.json({ name: injectFile, size: data.length }, { status: 201 });
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 500 });
+      }
+    }
+
+    // DELETE /api/inject/:file — remove a file
+    if (injectFile && method === "DELETE") {
+      try {
+        await Deno.remove(`${injectDir}/${injectFile}`);
+        return new Response(null, { status: 204 });
+      } catch { return Response.json({ error: "Not found" }, { status: 404 }); }
+    }
+  }
+
   return serveFile(pathname);
 }
 
