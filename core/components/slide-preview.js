@@ -546,7 +546,6 @@ function spansToHTML(spans) {
     if (s.type === 'bold')      return `<strong>${spansToHTML(s.children)}</strong>`;
     if (s.type === 'italic')    return `<em>${spansToHTML(s.children)}</em>`;
     if (s.type === 'underline') return `<u>${spansToHTML(s.children)}</u>`;
-    if (s.type === 'image')     return `<img src="${escAttr(s.src)}" alt="${escAttr(s.alt)}" style="height:1.4em;vertical-align:middle;object-fit:contain">`;
     return '';
   }).join('');
 }

@@ -108,15 +108,15 @@ Right column content.
 Each `=== N` line starts a new slide with duration N seconds (decimals ok).
 Parsed client-side by `parseSlides()` in [slide-parser.js](core/slide-parser.js),
 which returns a typed AST. The renderer in [slide-preview.js](core/components/slide-preview.js)
-consumes the AST and supports timing-aware features (emph dimming, inject invocation).
+consumes the AST and supports timing-aware features (emph dimming, plugin activation).
 
 **Block types:** `paragraph`, `heading` (level 1/2), `list` (ordered/unordered),
 `image` (via `@image filename fit`; file served from `_inject/`), `code`, `columns`, `emph` (timed), `plugin` (external JS; fills available space, no time window).
 
-**Inline spans:** `text`, `bold`, `italic`, `underline`, `image` (inline `![alt](src)` in span context only).
+**Inline spans:** `text`, `bold`, `italic`, `underline`.
 
 **Directive argument quoting:** any directive arg can be single- or double-quoted to support filenames
-with spaces: `@inject "my chart.js" 2 5 "sales data.json"`.
+with spaces: `@plugin "my chart.js" "sales data.json"`.
 
 **`dataFn` in plugin modules:** `dataFn()` → `Response` for the default data file; `dataFn("name")` → `Response` for any named file in `_inject/`. Caller chooses `.text()` / `.json()` / `.arrayBuffer()` / `.blob()`.
 
@@ -241,7 +241,7 @@ Navigation events (all `bubbles: true, composed: true`):
 ### Module editor layout
 
 ```
-┌─ nav bar: [← Back] [status] [? Syntax] [▶ Play] ────┐
+┌─ nav bar: [← Back] [status] [Files] [? Syntax] [▶ Play] ┐
 │                                                      │
 │  ┌─── Slides (textarea) ──┬─── Preview (16:9) ────┐ │
 │  │ === 5                  │  [slide content]       │ │
@@ -267,7 +267,7 @@ slide language reference. The modal is dismissed by clicking the backdrop or ×.
 
 During playback, `module-editor` passes both `currentIndex` and `slideTime`
 (elapsed seconds within the current slide) to `<slide-preview>`. The preview
-uses `slideTime` for emph dimming and inject invocation without re-rendering.
+uses `slideTime` for emph dimming and plugin activation without re-rendering.
 
 Drag clips from the Generated Audio list onto the Audio Track.
 Click a track clip once to select it (shows red ✕), click ✕ to delete.

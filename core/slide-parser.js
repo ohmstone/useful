@@ -7,7 +7,7 @@
 //   { duration, header, bg, body: Block[] }
 //
 // Block types: paragraph | heading | list | image | code | columns | emph | plugin
-// Span types:  text | bold | italic | underline | image
+// Span types:  text | bold | italic | underline
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -302,7 +302,7 @@ function _parseStyleHint(raw) {
 }
 
 // ── Inline parser ─────────────────────────────────────────────────────────────
-// Handles: **bold**, *italic*, __underline__, ![alt](src) for inline images
+// Handles: **bold**, *italic*, __underline__
 
 export function parseInline(text) {
   const spans = [];
@@ -342,19 +342,6 @@ export function parseInline(text) {
         flushText(pos);
         spans.push({ type: 'underline', children: parseInline(text.slice(pos + 2, close)) });
         pos = textStart = close + 2; continue;
-      }
-    }
-
-    // Inline image: ![alt](src)
-    if (ch === '!' && text[pos + 1] === '[') {
-      const closeBracket = text.indexOf(']', pos + 2);
-      if (closeBracket !== -1 && text[closeBracket + 1] === '(') {
-        const closeParen = text.indexOf(')', closeBracket + 2);
-        if (closeParen !== -1) {
-          flushText(pos);
-          spans.push({ type: 'image', alt: text.slice(pos + 2, closeBracket), src: text.slice(closeBracket + 2, closeParen) });
-          pos = textStart = closeParen + 1; continue;
-        }
       }
     }
 
