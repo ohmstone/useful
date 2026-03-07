@@ -7,6 +7,8 @@ tool that lets users draft course content, structure it with LLM assistance,
 add TTS voiceover, align audio with slides, and export a low-bandwidth static
 website that plays like a video.
 
+See [EXPORT.md](EXPORT.md) for the full export system specification.
+
 ---
 
 ## Running
@@ -34,6 +36,7 @@ Port defaults to **7700**, auto-increments if busy (scans up to +50).
 app.ts                          # Deno HTTP server, all routes, no dependencies
 deno.json                       # Activates Deno LS in IDE; defines dev task
 SLIDES.md                       # Slide language reference (human + LLM readable)
+EXPORT.md                       # Export system specification (static site + HLS)
 core/
   index.html                    # SPA shell — mounts <app-root>, loads fonts + CSS
   style.css                     # CSS custom properties (theme tokens) + global reset
@@ -53,8 +56,9 @@ core/
     app-root.js                 # <app-root>       — top-level shell, state + nav machine
 extra/
   pocket-tts-deno/              # git submodule — OpenAI-compatible TTS server (pocket-tts)
+  hls.js                        # hls.js library — copied into course exports for HLS playback
 .config/                        # Auto-created next to app.ts (or --config path)
-  config.json                   # { "projectDir": string | null }
+  config.json                   # { "projectDir": string | null, "exportDir": string | null }
 ```
 
 ---
@@ -69,9 +73,11 @@ extra/
   # underscore-prefixed entries = project-level metadata; course names may NOT start with _
   <course>/
     modules.json                # ["module-name", ...]  (ordered)
+    _meta.json                  # Optional: { title, description, thumbnail, author, tags } — used in export
     <module>/
       slides.txt                # Slide definitions (see format below and SLIDES.md)
       track.json                # [{ file, startTime, duration }]
+      _meta.json                # Optional: { title, description } — used in export
       audio/
         <timestamp>.wav         # Generated audio clip
         <timestamp>.meta.json   # { text, duration }
@@ -180,6 +186,15 @@ and re-registered automatically on each startup.
 | GET | `/api/inject/:file` | — | (varies) | Serve any file from `_inject/` with correct MIME |
 | POST | `/api/inject/:file` | raw body | 200 | Upload/overwrite file in `_inject/` |
 | DELETE | `/api/inject/:file` | — | 204 | Delete file from `_inject/` |
+| GET | `/api/meta/:course` | — | `CourseMeta` | Read course `_meta.json` |
+| PUT | `/api/meta/:course` | `CourseMeta` | 204 | Write course `_meta.json` |
+| GET | `/api/meta/:course/:module` | — | `ModuleMeta` | Read module `_meta.json` |
+| PUT | `/api/meta/:course/:module` | `ModuleMeta` | 204 | Write module `_meta.json` |
+| GET | `/api/export/config` | — | `{ exportDir }` | Get export directory |
+| POST | `/api/export/config` | `{ exportDir }` | `{ exportDir }` | Set export directory (must exist) |
+| POST | `/api/export/:course` | — | `{ ok, path }` | Trigger full course export |
+| GET | `/api/export/:course/status` | — | `{ state, progress, error }` | Poll export progress |
+| GET | `/api/export/:course/download` | — | `application/zip` | Download course as ZIP archive |
 
 ### Static file serving
 
@@ -314,6 +329,34 @@ conflicting clip; if no valid position exists the action is cancelled.
 - Scroll position is preserved when clips change (`#refreshLane` vs full `#render`)
 - Two-click delete: first click selects a clip (shows red ✕), clicking ✕ deletes it; clicking background deselects
 - Hover tooltip shows time (in seconds) at the cursor position over the track
+
+---
+
+## Export system
+
+See [EXPORT.md](EXPORT.md) for the full specification. Summary:
+
+- Triggered from `<course-view>` via `POST /api/export/:course`.
+- Requires **ffmpeg** for HLS audio assembly; checked at startup with a clear warning if absent.
+- Output: `<exportDir>/<course-slug>/` — a fully static directory, no server required.
+- Each module gets its own `index.html` (standalone, SEO-indexable), `slides.json` (AST),
+  and `audio.m3u8` + `.ts` segments (HLS/AAC via ffmpeg).
+- Course landing `index.html` + `manifest.json` + shared `player.js` / `player.css` / `hls.js`.
+- **PWA**: `manifest.webmanifest` + generated `sw.js` (service worker) enable offline use and
+  "Add to Home Screen" / installability; install prompt shown in player UI.
+- **Responsive**: two-column desktop layout; single-column with lessons drawer on mobile (< 768 px).
+- **Progress tracking**: `localStorage` stores `position` (seconds) + `completed` per module;
+  "Resume from…" prompt on reload; module list shows progress bar or checkmark.
+- **Module type extensibility**: each module has a `type` field (`"slides"` is the only current
+  type); the player dispatches to the appropriate renderer; future types (quiz, article) add
+  without changing the outer manifest/directory structure.
+- Two-column player layout: slide renderer (left) + module list with progress (right).
+- Seamless module transitions via `fetch` + `history.pushState` — fullscreen is not interrupted.
+- All slide content present as semantic HTML (`<article>`) for crawlers (hidden by CSS when player active).
+- No inline scripts or styles — strict CSP compatible (see EXPORT.md for recommended policy + nginx snippet).
+- Archive: `GET /api/export/:course/download` streams a ZIP of the course directory.
+- `exportDir` stored in `.config/config.json` alongside `projectDir`.
+- Course and module metadata via optional `_meta.json` files in the project directory.
 
 ---
 
