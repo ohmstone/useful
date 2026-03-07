@@ -191,17 +191,19 @@ const _pluginLoading = new Set();
 
 function updateTiming(body, slideTime, slides, slideIdx, courseRoot) {
   if (!body) return;
-  body.classList.toggle('sp-playing', slideTime >= 0);
 
-  // Emph dimming
+  // Emph dimming — toggle sp-is-emph-current on each emph element individually
+  // (mirrors slide-preview.js: only the currently active emph block stays bright)
   const emphEls = body.querySelectorAll('[data-emph-start]');
   let emphActive = false;
   for (const el of emphEls) {
-    const start = parseFloat(el.dataset.emphStart);
-    const dur   = parseFloat(el.dataset.emphDur);
-    if (slideTime >= start && slideTime < start + dur) { emphActive = true; break; }
+    const start  = parseFloat(el.dataset.emphStart);
+    const dur    = parseFloat(el.dataset.emphDur);
+    const active = slideTime >= 0 && slideTime >= start && slideTime < start + dur;
+    el.classList.toggle('sp-is-emph-current', active);
+    if (active) emphActive = true;
   }
-  body.classList.toggle('sp-emph-active', emphActive && slideTime >= 0);
+  body.classList.toggle('sp-emph-active', emphActive);
 
   // Plugin slots — activated once per playback start
   for (const slot of body.querySelectorAll('.sp-plugin')) {
@@ -253,7 +255,7 @@ async function _callPlugin(file, dataFile, slot, outputEl, slides, slideIdx, cou
 // ── State ─────────────────────────────────────────────────────────────────────
 
 const state = {
-  courseRoot:    '.',    // '.' at course root, '../..' from modules/<slug>/
+  courseRoot:    '.',    // resolved to absolute URL at init
   courseSlug:    '',
   manifest:      null,
   moduleSlug:    null,
@@ -269,7 +271,24 @@ const state = {
   timerBase:     0,     // performance.now() reference when timer-mode play started
   timerOffset:   0,     // accumulated seconds before current play session
   _lastSavedSec: -1,
+  _audioEnded:   false, // true when HLS ended early and we switched to timer mode
 };
+
+// ── Controls auto-hide ─────────────────────────────────────────────────────
+
+let _hideTimer = null;
+
+function _showControls() {
+  const area = document.getElementById('player-area');
+  if (!area) return;
+  area.classList.remove('controls-hidden');
+  clearTimeout(_hideTimer);
+  if (state.playing) {
+    _hideTimer = setTimeout(() => {
+      if (state.playing) area.classList.add('controls-hidden');
+    }, 3000);
+  }
+}
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
@@ -277,7 +296,10 @@ async function init() {
   const appEl = document.getElementById('app');
   if (!appEl) return;
 
-  state.courseRoot = appEl.dataset.courseRoot || '.';
+  // Resolve to an absolute URL so relative fetches/imports aren't affected
+  // by history.pushState() changes to the page URL.
+  const courseRootRaw = appEl.dataset.courseRoot || '.';
+  state.courseRoot = new URL(courseRootRaw + '/', location.href).href.replace(/\/$/, '');
   state.moduleSlug = appEl.dataset.module     || null;
 
   // Service worker
@@ -354,7 +376,7 @@ function renderShell(appEl) {
             <div id="progress-bar-wrap">
               <div id="progress-bar-bg">
                 <div id="progress-bar-fill"></div>
-                <input type="range" id="progress-scrubber" min="0" max="100" step="0.1" value="0">
+                <input type="range" id="progress-scrubber" min="0" max="0" step="any" value="0">
               </div>
             </div>
             <span id="time-total">0:00</span>
@@ -398,8 +420,8 @@ function renderShell(appEl) {
 
   const scrubber = document.getElementById('progress-scrubber');
   scrubber.addEventListener('input', () => {
-    const dur = state.slidesData?.totalDuration || 0;
-    seek((parseFloat(scrubber.value) / 100) * dur);
+    // scrubber.max is set to totalDuration (seconds), so value is already in seconds
+    seek(parseFloat(scrubber.value));
   });
 
   document.getElementById('btn-resume-yes').addEventListener('click', () => {
@@ -417,7 +439,23 @@ function renderShell(appEl) {
   state.audio.addEventListener('timeupdate', onTimeUpdate);
   state.audio.addEventListener('play',  () => { state.playing = true;  _updatePlayBtn(); });
   state.audio.addEventListener('pause', () => { state.playing = false; _updatePlayBtn(); saveCurrentProgress(); });
-  state.audio.addEventListener('ended', onModuleEnded);
+  state.audio.addEventListener('ended', () => {
+    // If slides still have time remaining, continue in timer mode rather than ending the module.
+    // Note: the browser dispatches 'pause' before 'ended' on natural end, so state.playing is
+    // already false here — do NOT gate on state.playing.
+    const slidesTotalDur = state.slidesData?.totalDuration || 0;
+    const audioTime      = state.audio.currentTime || 0;
+    if (audioTime < slidesTotalDur - 0.1) {
+      state._audioEnded  = true;
+      state.playing      = true;   // restore: pause event set this to false before ended fired
+      state.timerOffset  = audioTime;
+      state.timerBase    = performance.now();
+      _updatePlayBtn();
+      _timerTick();
+    } else {
+      onModuleEnded();
+    }
+  });
 
   // Module list clicks
   document.getElementById('module-list').addEventListener('click', e => {
@@ -442,6 +480,11 @@ function renderShell(appEl) {
   // ResizeObserver for slide stage
   state.resizeObs = new ResizeObserver(() => scaleCanvas());
   state.resizeObs.observe(document.getElementById('slide-stage'));
+
+  // Controls auto-hide
+  const playerArea = document.getElementById('player-area');
+  playerArea.addEventListener('mousemove', _showControls);
+  playerArea.addEventListener('touchstart', _showControls, { passive: true });
 
   _updateModuleList();
 }
@@ -482,7 +525,7 @@ function _updateModuleList() {
 
 // ── Module loading ─────────────────────────────────────────────────────────────
 
-async function loadModule(slug, pushState) {
+async function loadModule(slug, pushState, autoPlay = false) {
   // Save and stop current playback
   saveCurrentProgress();
   _stopPlayback();
@@ -537,7 +580,14 @@ async function loadModule(slug, pushState) {
   // Render first slide
   renderSlide();
   _updateModuleList();
-  _showResumePromptIfNeeded();
+
+  if (autoPlay) {
+    // Auto-advance: skip resume prompt and start playing immediately
+    document.getElementById('resume-prompt').hidden = true;
+    togglePlay();
+  } else {
+    _showResumePromptIfNeeded();
+  }
 }
 
 // ── Slide rendering ────────────────────────────────────────────────────────────
@@ -556,8 +606,9 @@ function renderSlide() {
   if (counter) counter.textContent = `${state.slideIndex + 1} / ${slides.length}`;
 
   // Apply initial timing state to new slide
+  // slideTime of -1 means not playing; updateTiming guards on this for emph activation
   const body = document.getElementById('sp-body');
-  updateTiming(body, state.slideTime, slides, state.slideIndex, state.courseRoot);
+  updateTiming(body, state.playing ? state.slideTime : -1, slides, state.slideIndex, state.courseRoot);
 }
 
 function scaleCanvas() {
@@ -588,14 +639,14 @@ function togglePlay() {
 }
 
 function currentTime() {
-  if (state.slidesData?.audio) return state.audio.currentTime || 0;
+  if (state.slidesData?.audio && !state._audioEnded) return state.audio.currentTime || 0;
   return state.timerOffset;
 }
 
 function seek(t) {
   const dur     = state.slidesData?.totalDuration || 0;
   const clamped = Math.max(0, Math.min(t, dur));
-  if (state.slidesData?.audio) {
+  if (state.slidesData?.audio && !state._audioEnded) {
     state.audio.currentTime = clamped;
     onTimeUpdate();
   } else {
@@ -621,7 +672,8 @@ function _timerPause() {
   saveCurrentProgress();
 }
 function _timerTick() {
-  if (!state.playing || state.slidesData?.audio) return;
+  // Run in timer mode when there's no audio, or when audio ended early and slides continue
+  if (!state.playing || (state.slidesData?.audio && !state._audioEnded)) return;
   const elapsed = (performance.now() - state.timerBase) / 1000;
   const t       = state.timerOffset + elapsed;
   const dur     = state.slidesData?.totalDuration || 0;
@@ -667,10 +719,7 @@ function _applyTime(t) {
   if (changed) {
     renderSlide();
   } else {
-    updateTiming(
-      document.getElementById('sp-body'),
-      slideTime, slides, idx, state.courseRoot
-    );
+    updateTiming(document.getElementById('sp-body'), slideTime, slides, idx, state.courseRoot);
   }
 
   // Throttle progress saves to once per second
@@ -684,21 +733,35 @@ function _applyTime(t) {
 function _updatePlayBtn() {
   const btn = document.getElementById('btn-play-pause');
   if (btn) btn.textContent = state.playing ? '⏸' : '▶';
+  if (state.playing) {
+    _showControls();  // restart hide timer
+  } else {
+    clearTimeout(_hideTimer);
+    document.getElementById('player-area')?.classList.remove('controls-hidden');
+  }
 }
 
 function onModuleEnded() {
-  saveCurrentProgress();
-  // Auto-advance to next module
+  // Force-mark as complete — audio.currentTime at 'ended' can be slightly before totalDuration
+  const dur = state.slidesData?.totalDuration || 0;
+  if (dur > 0 && state.moduleSlug) {
+    const all = _getAllProgress();
+    all[state.moduleSlug] = { position: dur, completed: true };
+    localStorage.setItem(_progressKey(), JSON.stringify(all));
+    _updateModuleList();
+  }
+  // Auto-advance to next module and resume playback
   const modules = state.manifest.modules;
   const idx     = modules.findIndex(m => m.slug === state.moduleSlug);
   if (idx >= 0 && idx < modules.length - 1) {
-    loadModule(modules[idx + 1].slug, true);
+    loadModule(modules[idx + 1].slug, true, true);
   }
 }
 
 function _stopPlayback() {
   if (state.timerRaf) { cancelAnimationFrame(state.timerRaf); state.timerRaf = null; }
-  state.timerOffset = 0;
+  state.timerOffset  = 0;
+  state._audioEnded  = false;
   if (state.hls) { state.hls.destroy(); state.hls = null; }
   state.audio.pause();
   state.audio.src = '';
@@ -744,7 +807,10 @@ function saveCurrentProgress() {
   const dur       = state.slidesData.totalDuration || 0;
   const completed = dur > 0 && t >= dur * 0.9;
   try {
-    const all = _getAllProgress();
+    const all      = _getAllProgress();
+    const existing = all[state.moduleSlug];
+    // Never downgrade a module that's already been marked complete
+    if (existing?.completed && !completed) return;
     all[state.moduleSlug] = { position: t, completed };
     localStorage.setItem(_progressKey(), JSON.stringify(all));
   } catch {}

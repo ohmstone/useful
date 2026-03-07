@@ -184,18 +184,20 @@ const STYLES = `
 class CourseView extends HTMLElement {
   static observedAttributes = ['course'];
 
-  #modules     = [];
-  #meta        = {};
-  #exportDir   = null;
-  #loading     = true;
-  #creating    = false;
-  #editingMeta = false;
-  #editingExport = false;
-  #error       = null;
-  #metaMsg     = null;  // { ok: bool, text: string }
-  #exportMsg   = null;
-  #dragIdx     = null;
-  #dropIdx     = null;
+  #modules           = [];
+  #meta              = {};
+  #exportDir         = null;
+  #loading           = true;
+  #creating          = false;
+  #editingMeta       = false;
+  #editingExport     = false;
+  #changingExportLoc = false;
+  #exporting         = false;
+  #error             = null;
+  #metaMsg           = null;  // { ok: bool, text: string }
+  #exportMsg         = null;
+  #dragIdx           = null;
+  #dropIdx           = null;
 
   get course() { return this.getAttribute('course') ?? ''; }
 
@@ -255,6 +257,7 @@ class CourseView extends HTMLElement {
     try {
       await this.#saveExportDir(path);
       this.#exportMsg = { ok: true, text: `Set to: ${path}` };
+      this.#changingExportLoc = false;
     } catch (e) {
       this.#exportMsg = { ok: false, text: e.message };
     }
@@ -342,17 +345,32 @@ class CourseView extends HTMLElement {
 
       ${this.#editingExport ? `
         <div class="panel" id="export-panel">
-          <p class="panel-title">Export Directory</p>
-          <p style="font-size:13px;color:var(--text-muted);margin:0">
-            Exported courses will be placed as subdirectories here.
-            ${this.#exportDir
-              ? `Current: <span class="export-dir-path">${esc(this.#exportDir)}</span>`
-              : '<span class="export-dir-unset">Not set — browse to select a folder.</span>'}
-          </p>
-          ${this.#exportMsg
-            ? `<span class="${this.#exportMsg.ok ? 'form-ok' : 'form-error'}">${esc(this.#exportMsg.text)}</span>`
-            : ''}
-          <dir-browser></dir-browser>
+          ${(this.#exportDir && !this.#changingExportLoc) ? `
+            <p class="panel-title">Export Course</p>
+            <p style="font-size:13px;color:var(--text-muted);margin:0">
+              Output: <span class="export-dir-path">${esc(this.#exportDir)}</span>
+            </p>
+            ${this.#exportMsg
+              ? `<span class="${this.#exportMsg.ok ? 'form-ok' : 'form-error'}">${esc(this.#exportMsg.text)}</span>`
+              : ''}
+            <div class="form-row">
+              <button class="btn btn-primary" id="btn-do-export" ${this.#exporting ? 'disabled' : ''}>
+                ${this.#exporting ? 'Exporting…' : '↑ Export Now'}
+              </button>
+              <button class="btn" id="btn-change-loc">Change Location</button>
+            </div>
+          ` : `
+            <p class="panel-title">Export Directory</p>
+            <p style="font-size:13px;color:var(--text-muted);margin:0">
+              ${this.#exportDir
+                ? `Current: <span class="export-dir-path">${esc(this.#exportDir)}</span>`
+                : '<span class="export-dir-unset">Not set — browse to select a folder.</span>'}
+            </p>
+            ${this.#exportMsg
+              ? `<span class="${this.#exportMsg.ok ? 'form-ok' : 'form-error'}">${esc(this.#exportMsg.text)}</span>`
+              : ''}
+            <dir-browser></dir-browser>
+          `}
         </div>
       ` : ''}
 
@@ -435,8 +453,33 @@ class CourseView extends HTMLElement {
 
     // ── Export panel toggle ─────────────────────────────────────────────────
     sr.querySelector('#btn-export')?.addEventListener('click', () => {
-      this.#editingExport = !this.#editingExport;
-      this.#editingMeta   = false;
+      this.#editingExport    = !this.#editingExport;
+      this.#editingMeta      = false;
+      this.#exportMsg        = null;
+      this.#changingExportLoc = false;
+      this.#render();
+    });
+
+    // ── Export now ──────────────────────────────────────────────────────────
+    sr.querySelector('#btn-do-export')?.addEventListener('click', async () => {
+      this.#exporting = true;
+      this.#exportMsg = null;
+      this.#render();
+      try {
+        const res  = await fetch(`/api/export/${enc(this.course)}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        this.#exportMsg = { ok: true, text: `Exported to: ${data.path}` };
+      } catch (e) {
+        this.#exportMsg = { ok: false, text: e.message };
+      }
+      this.#exporting = false;
+      this.#render();
+    });
+
+    // ── Change export location ──────────────────────────────────────────────
+    sr.querySelector('#btn-change-loc')?.addEventListener('click', () => {
+      this.#changingExportLoc = true;
       this.#exportMsg = null;
       this.#render();
     });

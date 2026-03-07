@@ -1,5 +1,27 @@
 /* player.css — standalone course player stylesheet for useful exports */
 
+@font-face {
+  font-family: 'Open Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('assets/fonts/OpenSans-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Open Sans';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('assets/fonts/OpenSans-Italic.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Open Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('assets/fonts/OpenSans-SemiBold.woff2') format('woff2');
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
@@ -127,7 +149,7 @@ html, body {
   border-radius: 4px;
   padding: 0.7em 1em;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 0.72em;
+  font-size: 0.88em;
   white-space: pre; overflow: auto; line-height: 1.5;
 }
 .sp-img-wrap     { flex: 1; min-height: 4em; overflow: hidden; }
@@ -136,13 +158,11 @@ html, body {
 #slide-canvas em     { font-style: italic; }
 #slide-canvas u      { text-decoration: underline; }
 .sp-emph {
-  border-left: 2px solid rgba(255,200,60,0.5);
-  padding-left: 0.6em;
   display: flex; flex-direction: column; gap: 0.3em;
 }
-/* Emph dimming during playback */
-.sp-playing.sp-emph-active > .sp-block:not(.sp-is-emph) { opacity: 0.1; transition: opacity 0.25s; }
-.sp-playing.sp-emph-active > .sp-block.sp-is-emph       { opacity: 1;   transition: opacity 0.25s; }
+/* Emph dimming during playback — mirrors slide-preview.js exactly */
+.sp-emph-active > .sp-block:not(.sp-is-emph-current) { opacity: 0.1; transition: opacity 0.25s; }
+.sp-emph-active > .sp-block.sp-is-emph-current        { opacity: 1;   transition: opacity 0.25s; }
 .sp-block { transition: opacity 0.25s; }
 .sp-plugin {
   flex: 1; min-height: 0; overflow: hidden; position: relative;
@@ -153,6 +173,21 @@ html, body {
   display: flex; align-items: center; justify-content: center;
   height: 100%; color: var(--text-muted); font-size: 1.2em;
 }
+
+/* ── Controls auto-hide ───────────────────────────────────────────────────── */
+
+#player-area { position: relative; }
+
+#controls {
+  transition: opacity 0.4s ease, visibility 0s linear 0.4s;
+}
+/* Hide when playing and no recent mouse activity */
+#player-area.controls-hidden #controls {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.4s ease, visibility 0s linear 0.4s;
+}
+#player-area.controls-hidden #slide-stage { cursor: none; }
 
 /* ── Controls bar ─────────────────────────────────────────────────────────── */
 

@@ -302,8 +302,9 @@ function firstHeadingText(slides: any[]): string {
   return "";
 }
 
-// Run ffmpeg to assemble audio clips → HLS stream in outDir
-async function runHlsExport(clips: TrackClip[], aDir: string, outDir: string): Promise<void> {
+// Run ffmpeg to assemble audio clips → HLS stream in outDir.
+// slidesDuration caps the output so audio never runs past the last slide.
+async function runHlsExport(clips: TrackClip[], aDir: string, outDir: string, slidesDuration: number): Promise<void> {
   const inputArgs: string[] = [];
   for (const c of clips) inputArgs.push("-i", `${aDir}/${c.file}`);
 
@@ -319,11 +320,14 @@ async function runHlsExport(clips: TrackClip[], aDir: string, outDir: string): P
       parts.push(`[${i}:a]adelay=${ms}|${ms}[a${i}]`);
       labels.push(`[a${i}]`);
     }
-    parts.push(`${labels.join("")}amix=inputs=${clips.length}:duration=longest[out]`);
+    // normalize=0: keep each clip at original volume (default normalize=1 scales by 1/N)
+    parts.push(`${labels.join("")}amix=inputs=${clips.length}:duration=longest:normalize=0[out]`);
     filterComplex = parts.join(";");
   }
 
-  const totalDuration = clips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+  const clipsDuration = clips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+  // Cap at slidesDuration: slides are authoritative for runtime
+  const totalDuration = Math.min(clipsDuration, slidesDuration);
   const r = await new Deno.Command("ffmpeg", {
     args: [
       "-y", ...inputArgs,
@@ -385,6 +389,7 @@ function buildModuleHtml(opts: {
   ${ogImg ? `<meta property="og:image" content="${escapeHtml(ogImg)}">` : ""}
   <meta property="og:type" content="article">
   <link rel="canonical" href="../../index.html#module=${encodeURIComponent(modSlug)}">
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="../../player.css">
   <link rel="manifest" href="../../manifest.webmanifest">
   <script type="application/ld+json">${ld}</script>
@@ -433,6 +438,7 @@ function buildCourseIndexHtml(meta: CourseMeta, courseName: string, modules: Mod
   <meta property="og:description" content="${escapeHtml(description)}">
   ${thumbnail ? `<meta property="og:image" content="${escapeHtml(thumbnail)}">` : ""}
   <meta property="og:type" content="website">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="player.css">
   <link rel="manifest" href="manifest.webmanifest">
   <script type="application/ld+json">${ld}</script>
@@ -511,6 +517,15 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
     await Deno.copyFile(`${BASE}/extra/hls.js`, `${outDir}/hls.js`);
     allFiles.push("hls.js");
 
+    // Open Sans fonts
+    await Deno.mkdir(`${outDir}/assets/fonts`, { recursive: true });
+    for (const font of ["OpenSans-Regular.woff2", "OpenSans-SemiBold.woff2", "OpenSans-Italic.woff2"]) {
+      try {
+        await Deno.copyFile(`${BASE}/extra/${font}`, `${outDir}/assets/fonts/${font}`);
+        allFiles.push(`assets/fonts/${font}`);
+      } catch { /* font file missing from extra/ — player will fall back to system-ui */ }
+    }
+
     // player.css + player.js — copy from core/export/ if present, else write stubs
     for (const f of ["player.css", "player.js"]) {
       const dst = `${outDir}/${f}`;
@@ -535,10 +550,15 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
       } catch { /* thumbnail missing from _inject */ }
     }
 
-    // Icon
+    // Icon (PWA)
     try { await Deno.copyFile(`${BASE}/core/export/icon.svg`, `${outDir}/assets/icon.svg`); }
     catch { await Deno.writeTextFile(`${outDir}/assets/icon.svg`, DEFAULT_ICON_SVG); }
     allFiles.push("assets/icon.svg");
+
+    // Favicon
+    try { await Deno.copyFile(`${BASE}/core/export/favicon.svg`, `${outDir}/favicon.svg`); }
+    catch { await Deno.writeTextFile(`${outDir}/favicon.svg`, DEFAULT_ICON_SVG); }
+    allFiles.push("favicon.svg");
 
     // Copy all _inject/ files to assets/
     try {
@@ -587,7 +607,7 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
         let audioError: string | undefined;
         if (clips.length > 0) {
           try {
-            await runHlsExport(clips, audioDir(pd, course, modName), modOutDir);
+            await runHlsExport(clips, audioDir(pd, course, modName), modOutDir, totalDuration);
             hlsFile = "audio.m3u8";
             allFiles.push(`modules/${modSlug}/audio.m3u8`);
             for await (const e of Deno.readDir(modOutDir)) {

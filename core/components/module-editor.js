@@ -306,23 +306,31 @@ class ModuleEditor extends HTMLElement {
     const res   = await fetch(`/api/track/${enc(this.course)}/${enc(this.module)}`);
     const clips = await res.json().catch(() => []);
 
-    this.#playing   = true;
-    this.#playStart = performance.now();
-    this.#updatePlayBtn();
-
-    // Schedule audio clips
-    this.#playTimeouts = clips.map(clip => {
-      return setTimeout(() => {
-        const url   = `/api/audio/${enc(this.course)}/${enc(this.module)}/${enc(clip.file)}`;
-        const audio = new Audio(url);
-        audio.play().catch(() => {});
-        this.#playAudios.push(audio);
-      }, clip.startTime * 1000);
-    });
-
-    const totalDuration = slides.reduce((sum, s) => sum + s.duration, 0);
     const preview = this.shadowRoot.querySelector('#preview');
     const track   = this.shadowRoot.querySelector('#track');
+
+    // Compute time offset from the currently viewed slide
+    const startIdx = preview?.currentIndex ?? 0;
+    let startOffset = 0;
+    for (let i = 0; i < startIdx && i < slides.length; i++) startOffset += slides[i].duration;
+
+    this.#playing   = true;
+    this.#playStart = performance.now() - startOffset * 1000;
+    this.#updatePlayBtn();
+
+    // Schedule audio clips that start at or after the start offset
+    this.#playTimeouts = clips
+      .filter(clip => clip.startTime >= startOffset)
+      .map(clip => {
+        return setTimeout(() => {
+          const url   = `/api/audio/${enc(this.course)}/${enc(this.module)}/${enc(clip.file)}`;
+          const audio = new Audio(url);
+          audio.play().catch(() => {});
+          this.#playAudios.push(audio);
+        }, (clip.startTime - startOffset) * 1000);
+      });
+
+    const totalDuration = slides.reduce((sum, s) => sum + s.duration, 0);
 
     const tick = () => {
       if (!this.#playing) return;
@@ -355,8 +363,10 @@ class ModuleEditor extends HTMLElement {
     this.#playAudios.forEach(a => { try { a.pause(); } catch {} });
     this.#playTimeouts = [];
     this.#playAudios  = [];
-    const track = this.shadowRoot?.querySelector('#track');
-    if (track) track.playTime = -1;
+    const track   = this.shadowRoot?.querySelector('#track');
+    const preview = this.shadowRoot?.querySelector('#preview');
+    if (track)   track.playTime   = -1;
+    if (preview) preview.slideTime = -1;
     this.#updatePlayBtn();
   }
 

@@ -49,7 +49,7 @@ const STYLES = `
     width: 1920px;
     height: 1080px;
     transform-origin: top left;
-    font-size: 20px;
+    font-size: 32px;
   }
 
   /* ── Slide ── */
@@ -82,7 +82,7 @@ const STYLES = `
     flex-direction: column;
     justify-content: center;
     padding: 4% 7%;
-    gap: 0.6em;
+    gap: 1.2em;
     overflow: hidden;
     min-height: 0;
   }
@@ -99,7 +99,7 @@ const STYLES = `
     flex-direction: column;
     justify-content: flex-start;
     padding: 4% 5%;
-    gap: 0.5em;
+    gap: 0.9em;
     overflow: hidden;
   }
 
@@ -133,7 +133,7 @@ const STYLES = `
     border-radius: 4px;
     padding: 0.7em 1em;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 0.72em;
+    font-size: 0.88em;
     white-space: pre;
     overflow: auto;
     line-height: 1.5;
@@ -165,8 +165,8 @@ const STYLES = `
 
   /* ── Emph dimming (active during playback) ── */
   /* Use > so only direct children of slide-body are dimmed, not blocks nested inside columns */
-  .emph-active > .block:not(.is-emph) { opacity: 0.1; transition: opacity 0.25s; }
-  .emph-active > .block.is-emph       { opacity: 1;   transition: opacity 0.25s; }
+  .emph-active > .block:not(.is-emph-current) { opacity: 0.1; transition: opacity 0.25s; }
+  .emph-active > .block.is-emph-current        { opacity: 1;   transition: opacity 0.25s; }
   .block { transition: opacity 0.25s; }
 
   /* Hide editing decoration during playback */
@@ -277,6 +277,8 @@ class SlidePreview extends HTMLElement {
     this.#slideTime = -1;
     this.#renderFull();
   }
+
+  get currentIndex() { return this.#index; }
 
   set currentIndex(val) {
     const idx = Math.max(0, Math.min(Math.floor(val), this.#slides.length - 1));
@@ -463,9 +465,11 @@ class SlidePreview extends HTMLElement {
     for (const el of emphEls) {
       const start = parseFloat(el.dataset.emphStart);
       const dur   = parseFloat(el.dataset.emphDur);
-      if (t >= start && t < start + dur) { emphActive = true; break; }
+      const active = t >= 0 && t >= start && t < start + dur;
+      el.classList.toggle('is-emph-current', active);
+      if (active) emphActive = true;
     }
-    body.classList.toggle('emph-active', emphActive && t >= 0);
+    body.classList.toggle('emph-active', emphActive);
 
     // — Plugin slots —
     // Each plugin is activated once when playback begins; it manages its own timing.
