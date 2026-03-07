@@ -14,9 +14,15 @@ const CONFILE    = `${CONFDIR}/config.json`;
 const STATIC     = `${BASE}/core`;
 const EXTRA      = `${BASE}/extra`;
 
+// ─── ffmpeg availability (checked at startup) ─────────────────────────────────
+
+let FFMPEG_AVAILABLE = false;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface Config { projectDir: string | null; }
+interface Config { projectDir: string | null; exportDir: string | null; }
+interface CourseMeta { title?: string; description?: string; thumbnail?: string; author?: string; tags?: string[]; }
+interface ModuleMeta { title?: string; description?: string; type?: string; }
 interface Course { name: string; contents: string[]; }
 
 interface AudioMeta { text: string; duration: number; }
@@ -25,8 +31,11 @@ interface TrackClip { file: string; startTime: number; duration: number; }
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 async function readConfig(): Promise<Config> {
-  try { return JSON.parse(await Deno.readTextFile(CONFILE)); }
-  catch { return { projectDir: null }; }
+  try {
+    const data = JSON.parse(await Deno.readTextFile(CONFILE));
+    return { projectDir: data.projectDir ?? null, exportDir: data.exportDir ?? null };
+  }
+  catch { return { projectDir: null, exportDir: null }; }
 }
 
 async function writeConfig(config: Config): Promise<void> {
@@ -45,6 +54,20 @@ async function readVoice(pd: string): Promise<string> {
 
 async function writeVoice(pd: string, voice: string): Promise<void> {
   await Deno.writeTextFile(voiceFile(pd), JSON.stringify({ voice }, null, 2));
+}
+
+// ─── Course / module metadata ────────────────────────────────────────────────
+
+function courseMetaFile(pd: string, course: string)           { return `${pd}/${course}/_meta.json`; }
+function moduleMetaFile(pd: string, course: string, mod: string) { return `${pd}/${course}/${mod}/_meta.json`; }
+
+async function readMeta<T>(path: string): Promise<T> {
+  try { return JSON.parse(await Deno.readTextFile(path)); }
+  catch { return {} as T; }
+}
+
+async function writeMeta(path: string, data: unknown): Promise<void> {
+  await Deno.writeTextFile(path, JSON.stringify(data, null, 2));
 }
 
 // ─── TTS server management ────────────────────────────────────────────────────
@@ -566,6 +589,73 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
+  // ── Course / module metadata  /api/meta/:course[/:module] ────────────────
+
+  if (seg[0] === "api" && seg[1] === "meta" && (seg.length === 3 || seg.length === 4)) {
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    const course = decodeURIComponent(seg[2]);
+
+    if (seg.length === 3) {
+      // Course-level meta
+      if (method === "GET") {
+        return Response.json(await readMeta<CourseMeta>(courseMetaFile(pd, course)));
+      }
+      if (method === "PUT") {
+        const body = await req.json() as CourseMeta;
+        await writeMeta(courseMetaFile(pd, course), body);
+        return new Response(null, { status: 204 });
+      }
+    }
+
+    if (seg.length === 4) {
+      // Module-level meta
+      const mod = decodeURIComponent(seg[3]);
+      if (method === "GET") {
+        return Response.json(await readMeta<ModuleMeta>(moduleMetaFile(pd, course, mod)));
+      }
+      if (method === "PUT") {
+        const body = await req.json() as ModuleMeta;
+        await writeMeta(moduleMetaFile(pd, course, mod), body);
+        return new Response(null, { status: 204 });
+      }
+    }
+  }
+
+  // ── Export config  /api/export/config ────────────────────────────────────
+
+  if (pathname === "/api/export/config" && method === "GET") {
+    const { exportDir } = await readConfig();
+    return Response.json({ exportDir });
+  }
+
+  if (pathname === "/api/export/config" && method === "POST") {
+    const body = await req.json() as { exportDir?: unknown };
+    if (typeof body.exportDir !== "string") {
+      return Response.json({ error: "exportDir must be a string" }, { status: 400 });
+    }
+    try {
+      if (!(await Deno.stat(body.exportDir)).isDirectory) throw 0;
+    } catch {
+      return Response.json({ error: "Path does not exist or is not a directory" }, { status: 400 });
+    }
+    const config = await readConfig();
+    config.exportDir = body.exportDir;
+    await writeConfig(config);
+    return Response.json({ exportDir: config.exportDir });
+  }
+
+  // ── Export status / download (stubs — implemented in Phase 2) ────────────
+
+  if (seg[0] === "api" && seg[1] === "export" && seg.length >= 3 && seg[2] !== "config") {
+    const { exportDir } = await readConfig();
+    if (!exportDir) return Response.json({ error: "Export directory not configured" }, { status: 503 });
+    if (!FFMPEG_AVAILABLE && method === "POST" && seg.length === 3) {
+      return Response.json({ error: "ffmpeg not found — audio export unavailable" }, { status: 503 });
+    }
+    return Response.json({ error: "Export not yet implemented" }, { status: 501 });
+  }
+
   return serveFile(pathname);
 }
 
@@ -581,7 +671,7 @@ function findPort(from: number): number {
 
 // Ensure config dir exists
 await Deno.mkdir(CONFDIR, { recursive: true });
-try { await Deno.stat(CONFILE); } catch { await writeConfig({ projectDir: null }); }
+try { await Deno.stat(CONFILE); } catch { await writeConfig({ projectDir: null, exportDir: null }); }
 
 // Start TTS server subprocess
 const ttsPort = findPort(7800);
@@ -610,6 +700,18 @@ try {
   console.log(`  tts server  →  http://localhost:${ttsPort}`);
 } catch (e) {
   console.error(`  Warning: TTS server failed to start: ${(e as Error).message}`);
+}
+
+// Check ffmpeg availability
+try {
+  const check = await new Deno.Command("ffmpeg", { args: ["-version"], stdout: "null", stderr: "null" }).output();
+  FFMPEG_AVAILABLE = check.success;
+} catch { /* ffmpeg not found */ }
+if (!FFMPEG_AVAILABLE) {
+  console.error("  [WARN] ffmpeg not found — course audio export will be unavailable.");
+  console.error("         Install ffmpeg and restart to enable this feature.\n");
+} else {
+  console.log("  ffmpeg  →  available");
 }
 
 // Shut down TTS server when the main process exits

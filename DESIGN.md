@@ -364,8 +364,9 @@ See [EXPORT.md](EXPORT.md) for the full specification. Summary:
 
 ### Config
 ```json
-{ "projectDir": "/absolute/path" }
+{ "projectDir": "/absolute/path", "exportDir": "/absolute/export/path" }
 ```
+`exportDir` defaults to `null` if absent (backward compatible).
 
 ### modules.json
 ```json
