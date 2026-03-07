@@ -57,6 +57,10 @@ core/
 extra/
   pocket-tts-deno/              # git submodule — OpenAI-compatible TTS server (pocket-tts)
   hls.js                        # hls.js library — copied into course exports for HLS playback
+core/export/
+  icon.svg                      # Default PWA icon — copied to assets/icon.svg in export
+  player.css                    # Standalone player stylesheet — copied verbatim into export
+  player.js                     # Standalone player app (ES module) — copied verbatim into export
 .config/                        # Auto-created next to app.ts (or --config path)
   config.json                   # { "projectDir": string | null, "exportDir": string | null }
 ```

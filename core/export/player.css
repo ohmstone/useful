@@ -1,0 +1,42 @@
+/* player.css — phase 3 placeholder
+   Full responsive player styles implemented in phase 3. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Open Sans', sans-serif;
+  background: #0d0d0f;
+  color: #e8e8f0;
+  line-height: 1.5;
+}
+
+/* Hide the semantic fallback article when the JS player is active */
+.player-active .module-content { display: none; }
+
+/* Minimal readable fallback layout (no JS) */
+.module-content {
+  max-width: 800px;
+  margin: 2rem auto;
+  padding: 0 1.5rem;
+}
+
+.module-content h1 { font-size: 1.8rem; margin-bottom: 1.5rem; }
+.module-content h2 { font-size: 1.4rem; margin: 1.5rem 0 0.5rem; }
+.module-content h3 { font-size: 1.2rem; margin: 1.2rem 0 0.4rem; }
+.module-content p  { margin-bottom: 0.8rem; }
+.module-content ul, .module-content ol { margin: 0.5rem 0 0.8rem 1.5rem; }
+.module-content li { margin-bottom: 0.25rem; }
+.module-content pre {
+  background: #1a1a2e;
+  padding: 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.8rem 0;
+  font-size: 0.875rem;
+}
+.module-content figure { margin: 1rem 0; }
+.module-content img { max-width: 100%; border-radius: 4px; }
+.module-content .slide { border-bottom: 1px solid #2a2a3e; padding: 1.5rem 0; }
+.module-content .slide:last-child { border-bottom: none; }
+.module-content .columns { display: flex; gap: 1rem; }
+.module-content .col { flex: 1; }
