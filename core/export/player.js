@@ -384,12 +384,13 @@ function renderShell(appEl) {
         </div>
         <div id="controls">
           <div id="controls-left">
-            <button class="ctrl-btn" id="btn-skip-back"  title="Back 10s">⏮ 10s</button>
-            <button class="ctrl-btn" id="btn-play-pause" title="Play/Pause">▶</button>
-            <button class="ctrl-btn" id="btn-skip-fwd"   title="Forward 10s">10s ⏭</button>
+            <button class="ctrl-btn" id="btn-skip-back"  title="Back 10s"><i class="icon-rewind"></i><span class="btn-label"> 10s</span></button>
+            <button class="ctrl-btn" id="btn-play-pause" title="Play/Pause"><i class="icon-play"></i></button>
+            <button class="ctrl-btn" id="btn-skip-fwd"   title="Forward 10s"><span class="btn-label">10s </span><i class="icon-fast-fw"></i></button>
           </div>
           <div id="controls-progress">
             <span id="time-current">0:00</span>
+            <span id="time-remaining">0:00</span>
             <div id="progress-bar-wrap">
               <div id="progress-bar-bg">
                 <div id="progress-bar-fill"></div>
@@ -408,8 +409,8 @@ function renderShell(appEl) {
               <option value="1.75">1.75×</option>
               <option value="2">2×</option>
             </select>
-            <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen">⛶</button>
-            <button class="ctrl-btn" id="btn-lessons"    title="Lessons">☰ Lessons</button>
+            <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen"><i class="icon-fullscreen"></i></button>
+            <button class="ctrl-btn" id="btn-lessons"    title="Lessons"><i class="icon-menu"></i> Lessons</button>
           </div>
         </div>
         <div id="resume-prompt" hidden>
@@ -421,7 +422,7 @@ function renderShell(appEl) {
       <nav id="module-sidebar">
         <div id="sidebar-title">
           <span id="sidebar-title-text">${escHtml(state.manifest.title || '')}</span>
-          <button class="ctrl-btn" id="btn-install" title="Install for offline" hidden>⬇</button>
+          <button class="ctrl-btn" id="btn-install" title="Install for offline" hidden><i class="icon-download"></i></button>
         </div>
         <ul id="module-list"></ul>
         <div id="course-progress-wrap">
@@ -498,9 +499,10 @@ function renderShell(appEl) {
       state.playing      = true;   // restore: pause event set this to false before ended fired
       state.timerOffset  = audioTime;
       state.timerBase    = performance.now();
-      // Update button text only — do NOT call _updatePlayBtn() as it would show controls
-      const btn = document.getElementById('btn-play-pause');
-      if (btn) btn.textContent = '⏸';
+      // Update button icon only — do NOT call _updatePlayBtn() as it would show controls
+      const btn  = document.getElementById('btn-play-pause');
+      const icon = btn?.querySelector('i');
+      if (icon) icon.className = 'icon-pause';
       _timerTick();
     } else {
       onModuleEnded();
@@ -551,7 +553,7 @@ function _renderModuleListHTML() {
     const dur = m.duration ? fmtTime(m.duration) : '';
     return `<li class="module-item${completed ? ' is-complete' : ''}" data-slug="${escAttr(m.slug)}">
       <div class="module-item-inner">
-        <span class="module-check">${completed ? '✓' : ''}</span>
+        <span class="module-check">${completed ? '<i class="icon-ok"></i>' : ''}</span>
         <span class="module-title">${escHtml(m.title || m.slug)}</span>
         ${dur ? `<span class="module-dur">${escHtml(dur)}</span>` : ''}
       </div>
@@ -809,7 +811,9 @@ function _applyTime(t) {
   const pct    = dur > 0 ? (t / dur) * 100 : 0;
   const slides = state.slidesData?.slides ?? [];
 
-  document.getElementById('time-current').textContent = fmtTime(t);
+  document.getElementById('time-current').textContent   = fmtTime(t);
+  const remaining = Math.max(0, dur - t);
+  document.getElementById('time-remaining').textContent = `-${fmtTime(remaining)}`;
   document.getElementById('progress-bar-fill').style.width = `${pct.toFixed(2)}%`;
   const scrubber = document.getElementById('progress-scrubber');
   if (scrubber && !scrubber.matches(':active')) scrubber.value = String(t);
@@ -841,7 +845,10 @@ function _applyTime(t) {
 
 function _updatePlayBtn() {
   const btn = document.getElementById('btn-play-pause');
-  if (btn) btn.textContent = state.playing ? '⏸' : '▶';
+  if (btn) {
+    const icon = btn.querySelector('i');
+    if (icon) icon.className = state.playing ? 'icon-pause' : 'icon-play';
+  }
   if (state.playing) {
     _showControls();  // restart hide timer
   } else {

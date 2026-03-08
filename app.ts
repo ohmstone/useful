@@ -537,6 +537,11 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
         allFiles.push(`assets/fonts/${font}`);
       } catch { /* font file missing from extra/ — player will fall back to system-ui */ }
     }
+    // Icons font (lives in core/font/)
+    try {
+      await Deno.copyFile(`${BASE}/core/font/icons.woff2`, `${outDir}/assets/fonts/icons.woff2`);
+      allFiles.push(`assets/fonts/icons.woff2`);
+    } catch { /* icons font missing */ }
 
     // player.css + player.js — copy from core/export/ if present, else write stubs
     for (const f of ["player.css", "player.js"]) {

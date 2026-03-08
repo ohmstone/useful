@@ -360,7 +360,7 @@ class ModuleEditor extends HTMLElement {
     cancelAnimationFrame(this.#playRaf);
     this.#playRaf = null;
     this.#playTimeouts.forEach(t => clearTimeout(t));
-    this.#playAudios.forEach(a => { try { a.pause(); } catch {} });
+    this.#playAudios.forEach(a => { try { a.pause(); } catch {/* */} });
     this.#playTimeouts = [];
     this.#playAudios  = [];
     const track   = this.shadowRoot?.querySelector('#track');
