@@ -1,5 +1,8 @@
 // useful — instructional course builder
 // Run: deno run --allow-net --allow-read --allow-write --allow-env=HOME --allow-run app.ts [--config <path>]
+// deno-lint-ignore-file no-explicit-any
+
+import { parseSlides } from "./core/slide-parser.js";
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
 
@@ -14,9 +17,15 @@ const CONFILE    = `${CONFDIR}/config.json`;
 const STATIC     = `${BASE}/core`;
 const EXTRA      = `${BASE}/extra`;
 
+// ─── ffmpeg availability (checked at startup) ─────────────────────────────────
+
+let FFMPEG_AVAILABLE = false;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface Config { projectDir: string | null; }
+interface Config { projectDir: string | null; exportDir: string | null; }
+interface CourseMeta { title?: string; description?: string; thumbnail?: string; author?: string; tags?: string[]; }
+interface ModuleMeta { title?: string; description?: string; type?: string; }
 interface Course { name: string; contents: string[]; }
 
 interface AudioMeta { text: string; duration: number; }
@@ -25,8 +34,11 @@ interface TrackClip { file: string; startTime: number; duration: number; }
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 async function readConfig(): Promise<Config> {
-  try { return JSON.parse(await Deno.readTextFile(CONFILE)); }
-  catch { return { projectDir: null }; }
+  try {
+    const data = JSON.parse(await Deno.readTextFile(CONFILE));
+    return { projectDir: data.projectDir ?? null, exportDir: data.exportDir ?? null };
+  }
+  catch { return { projectDir: null, exportDir: null }; }
 }
 
 async function writeConfig(config: Config): Promise<void> {
@@ -45,6 +57,20 @@ async function readVoice(pd: string): Promise<string> {
 
 async function writeVoice(pd: string, voice: string): Promise<void> {
   await Deno.writeTextFile(voiceFile(pd), JSON.stringify({ voice }, null, 2));
+}
+
+// ─── Course / module metadata ────────────────────────────────────────────────
+
+function courseMetaFile(pd: string, course: string)           { return `${pd}/${course}/_meta.json`; }
+function moduleMetaFile(pd: string, course: string, mod: string) { return `${pd}/${course}/${mod}/_meta.json`; }
+
+async function readMeta<T>(path: string): Promise<T> {
+  try { return JSON.parse(await Deno.readTextFile(path)); }
+  catch { return {} as T; }
+}
+
+async function writeMeta(path: string, data: unknown): Promise<void> {
+  await Deno.writeTextFile(path, JSON.stringify(data, null, 2));
 }
 
 // ─── TTS server management ────────────────────────────────────────────────────
@@ -182,6 +208,512 @@ async function serveFile(pathname: string): Promise<Response> {
     return new Response(data, { headers: { "Content-Type": MIME[ext] ?? "application/octet-stream" } });
   } catch {
     return new Response("Not Found", { status: 404 });
+  }
+}
+
+// ─── Export engine ───────────────────────────────────────────────────────────
+
+interface ExportModState { state: "pending" | "done" | "error"; error?: string; }
+interface ExportJob {
+  state: "running" | "done" | "error";
+  progress: { done: number; total: number };
+  modules: Record<string, ExportModState>;
+  path?: string;
+  error?: string;
+}
+interface ModuleEntry {
+  slug: string; title: string; description: string; type: string;
+  duration: number; path: string; audioError?: string;
+}
+
+const exportJobs = new Map<string, ExportJob>();
+
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled";
+}
+
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function spansToHtml(spans: any[]): string {
+  return (spans ?? []).map((s: any): string => {
+    switch (s.type) {
+      case "text":      return escapeHtml(s.text ?? "");
+      case "bold":      return `<strong>${spansToHtml(s.children)}</strong>`;
+      case "italic":    return `<em>${spansToHtml(s.children)}</em>`;
+      case "underline": return `<u>${spansToHtml(s.children)}</u>`;
+      default:          return "";
+    }
+  }).join("");
+}
+
+function blockToHtml(b: any, assetBase: string): string {
+  switch (b.type) {
+    case "paragraph": return `<p>${spansToHtml(b.spans)}</p>`;
+    case "heading": {
+      const lv = (b.level ?? 1) + 1; // slide h1 → <h2> (h1 is module title)
+      return `<h${lv}>${spansToHtml(b.spans)}</h${lv}>`;
+    }
+    case "list": {
+      const tag = b.ordered ? "ol" : "ul";
+      const items = (b.items ?? []).map((i: any[]) => `<li>${spansToHtml(i)}</li>`).join("");
+      return `<${tag}>${items}</${tag}>`;
+    }
+    case "code": {
+      const cls = b.lang ? ` class="language-${escapeHtml(b.lang)}"` : "";
+      return `<pre><code${cls}>${escapeHtml(b.text ?? "")}</code></pre>`;
+    }
+    case "image": {
+      const file = decodeURIComponent((b.src ?? "").replace("/api/inject/", ""));
+      return `<figure><img src="${assetBase}/${escapeHtml(file)}" alt="" loading="lazy"></figure>`;
+    }
+    case "emph":
+      return `<div class="emph">${(b.blocks ?? []).map((x: any) => blockToHtml(x, assetBase)).join("")}</div>`;
+    case "columns":
+      return `<div class="columns">${(b.cols ?? []).map((c: any) =>
+        `<div class="col">${(c.blocks ?? []).map((x: any) => blockToHtml(x, assetBase)).join("")}</div>`
+      ).join("")}</div>`;
+    case "plugin":
+      return `<!-- plugin: ${escapeHtml(b.file ?? "")} -->`;
+    default: return "";
+  }
+}
+
+// Rewrite /api/inject/<file> → assets/<file> in parsed slide AST (for slides.json)
+function rewriteInjectPaths(obj: any): any {
+  return JSON.parse(JSON.stringify(obj), (_: string, v: any) => {
+    if (typeof v === "string" && v.startsWith("/api/inject/")) {
+      return `assets/${decodeURIComponent(v.slice(12))}`;
+    }
+    return v;
+  });
+}
+
+// Extract plain text of the first heading across all slides (description fallback)
+function firstHeadingText(slides: any[]): string {
+  for (const slide of slides) {
+    for (const b of (slide.body ?? [])) {
+      if (b.type === "heading") return spansToHtml(b.spans).replace(/<[^>]+>/g, "");
+    }
+  }
+  return "";
+}
+
+// Run ffmpeg to assemble audio clips → HLS stream in outDir.
+// slidesDuration caps the output so audio never runs past the last slide.
+async function runHlsExport(clips: TrackClip[], aDir: string, outDir: string, slidesDuration: number): Promise<void> {
+  const inputArgs: string[] = [];
+  for (const c of clips) inputArgs.push("-i", `${aDir}/${c.file}`);
+
+  let filterComplex: string;
+  if (clips.length === 1) {
+    const ms = Math.round(clips[0].startTime * 1000);
+    filterComplex = `[0:a]adelay=${ms}|${ms}[out]`;
+  } else {
+    const parts: string[] = [];
+    const labels: string[] = [];
+    for (let i = 0; i < clips.length; i++) {
+      const ms = Math.round(clips[i].startTime * 1000);
+      parts.push(`[${i}:a]adelay=${ms}|${ms}[a${i}]`);
+      labels.push(`[a${i}]`);
+    }
+    // normalize=0: keep each clip at original volume (default normalize=1 scales by 1/N)
+    parts.push(`${labels.join("")}amix=inputs=${clips.length}:duration=longest:normalize=0[out]`);
+    filterComplex = parts.join(";");
+  }
+
+  const clipsDuration = clips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+  // Cap at slidesDuration: slides are authoritative for runtime
+  const totalDuration = Math.min(clipsDuration, slidesDuration);
+  const r = await new Deno.Command("ffmpeg", {
+    args: [
+      "-y", ...inputArgs,
+      "-filter_complex", filterComplex,
+      "-map", "[out]",
+      "-t", String(totalDuration),
+      "-c:a", "aac", "-b:a", "64k", "-ar", "22050", "-ac", "1",
+      "-hls_time", "4",
+      "-hls_playlist_type", "vod",
+      "-hls_segment_filename", `${outDir}/audio-%03d.ts`,
+      `${outDir}/audio.m3u8`,
+    ],
+    stdout: "null",
+    stderr: "piped",
+  }).output();
+
+  if (!r.success) {
+    throw new Error(`ffmpeg: ${new TextDecoder().decode(r.stderr).slice(-500)}`);
+  }
+}
+
+// ── HTML templates ────────────────────────────────────────────────────────────
+
+const DEFAULT_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" rx="20" fill="#1a1a2e"/>
+  <text x="50" y="68" font-size="60" text-anchor="middle" font-family="sans-serif" fill="#7c6af7">U</text>
+</svg>`;
+
+function buildModuleHtml(opts: {
+  courseTitle: string; modTitle: string; modSlug: string;
+  description: string; slides: any[]; thumbnail: string | null;
+}): string {
+  const { courseTitle, modTitle, modSlug, description, slides, thumbnail } = opts;
+  const assetBase = "../../assets";
+  const ogImg = thumbnail ? `../../${thumbnail}` : "";
+
+  const body = slides.map((s: any, i: number) => {
+    const blocks = (s.body ?? []).map((b: any) => `    ${blockToHtml(b, assetBase)}`).join("\n");
+    return `  <section class="slide" data-duration="${s.duration}" data-index="${i}">\n${blocks}\n  </section>`;
+  }).join("\n");
+
+  const ld = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "CourseSection",
+    "name": modTitle,
+    "description": description,
+    "isPartOf": { "@type": "Course", "name": courseTitle },
+  });
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(modTitle)} — ${escapeHtml(courseTitle)}</title>
+  <meta name="description" content="${escapeHtml(description)}">
+  <meta property="og:title" content="${escapeHtml(modTitle)}">
+  <meta property="og:description" content="${escapeHtml(description)}">
+  ${ogImg ? `<meta property="og:image" content="${escapeHtml(ogImg)}">` : ""}
+  <meta property="og:type" content="article">
+  <link rel="canonical" href="../../index.html#module=${encodeURIComponent(modSlug)}">
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../player.css">
+  <link rel="manifest" href="../../manifest.webmanifest">
+  <script type="application/ld+json">${ld}</script>
+</head>
+<body>
+  <main id="app" data-module="${escapeHtml(modSlug)}" data-course-root="../..">
+    <article class="module-content" aria-label="Module slide content">
+      <h1>${escapeHtml(modTitle)}</h1>
+${body}
+    </article>
+  </main>
+  <script type="module" src="../../player.js"></script>
+</body>
+</html>`;
+}
+
+function buildCourseIndexHtml(meta: CourseMeta, courseName: string, modules: ModuleEntry[]): string {
+  const title = meta.title ?? courseName;
+  const description = meta.description ?? "";
+  const thumbnail = meta.thumbnail ? "assets/thumbnail.jpg" : "";
+
+  const modList = modules.map(m =>
+    `      <li><a href="${escapeHtml(m.path)}">${escapeHtml(m.title)}</a></li>`
+  ).join("\n");
+
+  const ld = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Course",
+    "name": title,
+    "description": description,
+    ...(meta.author ? { "author": { "@type": "Person", "name": meta.author } } : {}),
+    "hasPart": modules.map((m, i) => ({
+      "@type": "CourseSection", "position": i + 1, "name": m.title, "description": m.description,
+    })),
+  });
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <meta name="description" content="${escapeHtml(description)}">
+  <meta property="og:title" content="${escapeHtml(title)}">
+  <meta property="og:description" content="${escapeHtml(description)}">
+  ${thumbnail ? `<meta property="og:image" content="${escapeHtml(thumbnail)}">` : ""}
+  <meta property="og:type" content="website">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="player.css">
+  <link rel="manifest" href="manifest.webmanifest">
+  <script type="application/ld+json">${ld}</script>
+</head>
+<body>
+  <main id="app">
+    <nav id="module-list" aria-label="Course modules">
+      <h1>${escapeHtml(title)}</h1>
+      <ul>
+${modList}
+      </ul>
+    </nav>
+    <section id="player"></section>
+  </main>
+  <script type="module" src="player.js"></script>
+</body>
+</html>`;
+}
+
+function buildWebManifest(meta: CourseMeta, courseName: string, pngIconSizes: number[] = []): Record<string, unknown> {
+  const name = meta.title ?? courseName;
+  const words = name.split(/\s+/);
+  const shortName = words.length > 3 ? words.slice(0, 3).join(" ") : name;
+  const icons = pngIconSizes.map(size => ({
+    src: `assets/icon-${size}.png`, sizes: `${size}x${size}`, type: "image/png", purpose: "any",
+  }));
+  const manifest: Record<string, unknown> = {
+    name, short_name: shortName,
+    description: meta.description ?? "",
+    start_url: "./index.html",
+    display: "standalone",
+    background_color: "#0d0d0f",
+    theme_color: "#0d0d0f",
+  };
+  if (icons.length) manifest.icons = icons;
+  return manifest;
+}
+
+function buildSwJs(timestamp: number, assets: string[]): string {
+  // Exclude HLS transport-stream segments from precache: Caddy returns 206
+  // (partial content) for media files which Cache.addAll() rejects.
+  // Segments are fetched live on demand via the network-fallback fetch handler.
+  const precache = assets.filter(a => !a.endsWith('.ts'));
+  const list = JSON.stringify(precache.map(a => `./${a}`), null, 2);
+  return `// Generated service worker — useful course export
+const CACHE = 'useful-course-${timestamp}';
+const ASSETS = ${list};
+
+self.addEventListener('install', e => {
+  e.waitUntil(
+    caches.open(CACHE).then(c =>
+      Promise.all(ASSETS.map(url =>
+        fetch(url).then(r => { if (r.status === 200) return c.put(url, r); }).catch(() => {})
+      ))
+    )
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', e => {
+  e.respondWith(caches.match(e.request).then(r => r ?? fetch(e.request)));
+});
+`;
+}
+
+// ── Main export pipeline ──────────────────────────────────────────────────────
+
+async function runExport(course: string, pd: string, expDir: string): Promise<void> {
+  const job = exportJobs.get(course)!;
+  try {
+    const modules = await readModules(pd, course);
+    if (modules.length === 0) throw new Error("Course has no modules");
+
+    const courseSlug = slugify(course);
+    const outDir = `${expDir}/${courseSlug}`;
+    await Deno.mkdir(`${outDir}/assets`, { recursive: true });
+    const allFiles: string[] = [];
+
+    // hls.js
+    await Deno.copyFile(`${BASE}/extra/hls.js`, `${outDir}/hls.js`);
+    allFiles.push("hls.js");
+
+    // Open Sans fonts
+    await Deno.mkdir(`${outDir}/assets/fonts`, { recursive: true });
+    for (const font of ["OpenSans-Regular.woff2", "OpenSans-SemiBold.woff2", "OpenSans-Italic.woff2"]) {
+      try {
+        await Deno.copyFile(`${BASE}/extra/${font}`, `${outDir}/assets/fonts/${font}`);
+        allFiles.push(`assets/fonts/${font}`);
+      } catch { /* font file missing from extra/ — player will fall back to system-ui */ }
+    }
+    // Icons font (lives in core/font/)
+    try {
+      await Deno.copyFile(`${BASE}/core/font/icons.woff2`, `${outDir}/assets/fonts/icons.woff2`);
+      allFiles.push(`assets/fonts/icons.woff2`);
+    } catch { /* icons font missing */ }
+
+    // player.css + player.js — copy from core/export/ if present, else write stubs
+    for (const f of ["player.css", "player.js"]) {
+      const dst = `${outDir}/${f}`;
+      try { await Deno.copyFile(`${BASE}/core/export/${f}`, dst); }
+      catch {
+        await Deno.writeTextFile(dst, f.endsWith(".css")
+          ? "/* player.css — phase 3 */"
+          : "// player.js — phase 3\nif ('serviceWorker' in navigator) {\n  navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {});\n}\n");
+      }
+      allFiles.push(f);
+    }
+
+    // Course metadata
+    const courseMeta = await readMeta<CourseMeta>(courseMetaFile(pd, course));
+    const courseTitle = courseMeta.title ?? course;
+
+    // Thumbnail (source: _inject/<filename>)
+    if (courseMeta.thumbnail) {
+      try {
+        await Deno.copyFile(`${pd}/_inject/${courseMeta.thumbnail}`, `${outDir}/assets/thumbnail.jpg`);
+        allFiles.push("assets/thumbnail.jpg");
+      } catch { /* thumbnail missing from _inject */ }
+    }
+
+    // Icon (PWA)
+    try { await Deno.copyFile(`${BASE}/core/export/icon.svg`, `${outDir}/assets/icon.svg`); }
+    catch { await Deno.writeTextFile(`${outDir}/assets/icon.svg`, DEFAULT_ICON_SVG); }
+    allFiles.push("assets/icon.svg");
+
+    // PNG icons for PWA manifest (pre-generated; see core/export/icon-*.png)
+    const pngIconSizes: number[] = [];
+    for (const size of [192, 512]) {
+      try {
+        await Deno.copyFile(`${BASE}/core/export/icon-${size}.png`, `${outDir}/assets/icon-${size}.png`);
+        allFiles.push(`assets/icon-${size}.png`);
+        pngIconSizes.push(size);
+      } catch { /* PNG missing — skip */ }
+    }
+
+    // Favicon
+    try { await Deno.copyFile(`${BASE}/core/export/favicon.svg`, `${outDir}/favicon.svg`); }
+    catch { await Deno.writeTextFile(`${outDir}/favicon.svg`, DEFAULT_ICON_SVG); }
+    allFiles.push("favicon.svg");
+
+    // Copy all _inject/ files to assets/
+    try {
+      for await (const e of Deno.readDir(`${pd}/_inject`)) {
+        if (!e.isFile) continue;
+        await Deno.copyFile(`${pd}/_inject/${e.name}`, `${outDir}/assets/${e.name}`).catch(() => {});
+        const key = `assets/${e.name}`;
+        if (!allFiles.includes(key)) allFiles.push(key);
+      }
+    } catch { /* _inject may not exist */ }
+
+    // Process each module
+    job.progress.total = modules.length;
+    const moduleEntries: ModuleEntry[] = [];
+
+    for (const modName of modules) {
+      const modSlug = slugify(modName);
+      const modOutDir = `${outDir}/modules/${modSlug}`;
+      await Deno.mkdir(modOutDir, { recursive: true });
+      job.modules[modSlug] = { state: "pending" };
+
+      try {
+        const modMeta = await readMeta<ModuleMeta>(moduleMetaFile(pd, course, modName));
+        const modTitle = modMeta.title ?? modName;
+        const modType  = modMeta.type ?? "slides";
+
+        const rawSlides = parseSlides(
+          await Deno.readTextFile(slidesFile(pd, course, modName)).catch(() => "")
+        );
+
+        // Add audioStart offsets
+        let t = 0;
+        const timedSlides = rawSlides.map((s: any) => {
+          const audioStart = t;
+          t += (s.duration ?? 0);
+          return { ...s, audioStart };
+        });
+        const totalDuration = t;
+
+        const clips: TrackClip[] = JSON.parse(
+          await Deno.readTextFile(trackFile(pd, course, modName)).catch(() => "[]")
+        );
+
+        // HLS audio assembly
+        let hlsFile: string | null = null;
+        let audioError: string | undefined;
+        if (clips.length > 0) {
+          try {
+            await runHlsExport(clips, audioDir(pd, course, modName), modOutDir, totalDuration);
+            hlsFile = "audio.m3u8";
+            allFiles.push(`modules/${modSlug}/audio.m3u8`);
+            for await (const e of Deno.readDir(modOutDir)) {
+              if (e.name.endsWith(".ts")) allFiles.push(`modules/${modSlug}/${e.name}`);
+            }
+          } catch (e) {
+            audioError = String(e);
+          }
+        }
+
+        // slides.json
+        const slidesJson: Record<string, unknown> = {
+          audio: hlsFile,
+          totalDuration,
+          slides: timedSlides.map(rewriteInjectPaths),
+        };
+        if (audioError) slidesJson.audioError = audioError;
+        await Deno.writeTextFile(`${modOutDir}/slides.json`, JSON.stringify(slidesJson, null, 2));
+        allFiles.push(`modules/${modSlug}/slides.json`);
+
+        const description = modMeta.description ?? firstHeadingText(rawSlides);
+
+        // module index.html
+        await Deno.writeTextFile(`${modOutDir}/index.html`, buildModuleHtml({
+          courseTitle, modTitle, modSlug, description,
+          slides: rawSlides, thumbnail: courseMeta.thumbnail ? "assets/thumbnail.jpg" : null,
+        }));
+        allFiles.push(`modules/${modSlug}/index.html`);
+
+        moduleEntries.push({
+          slug: modSlug, title: modTitle, description, type: modType,
+          duration: totalDuration, path: `modules/${modSlug}/index.html`,
+          ...(audioError ? { audioError } : {}),
+        });
+        job.modules[modSlug] = { state: "done" };
+      } catch (e) {
+        job.modules[modSlug] = { state: "error", error: String(e) };
+        moduleEntries.push({
+          slug: modSlug, title: modName, description: "", type: "slides",
+          duration: 0, path: `modules/${modSlug}/index.html`,
+        });
+      }
+      job.progress.done++;
+    }
+
+    // manifest.json
+    const manifest: Record<string, unknown> = {
+      title: courseTitle,
+      description: courseMeta.description ?? "",
+      tags: courseMeta.tags ?? [],
+      modules: moduleEntries,
+    };
+    if (courseMeta.author) manifest.author = courseMeta.author;
+    if (courseMeta.thumbnail) manifest.thumbnail = "assets/thumbnail.jpg";
+    await Deno.writeTextFile(`${outDir}/manifest.json`, JSON.stringify(manifest, null, 2));
+    allFiles.push("manifest.json");
+
+    // course index.html
+    await Deno.writeTextFile(`${outDir}/index.html`,
+      buildCourseIndexHtml(courseMeta, course, moduleEntries));
+    allFiles.push("index.html");
+
+    // manifest.webmanifest
+    await Deno.writeTextFile(`${outDir}/manifest.webmanifest`,
+      JSON.stringify(buildWebManifest(courseMeta, course, pngIconSizes), null, 2));
+    allFiles.push("manifest.webmanifest");
+
+    // sw-manifest.json (debug / tooling)
+    await Deno.writeTextFile(`${outDir}/sw-manifest.json`, JSON.stringify(allFiles, null, 2));
+
+    // sw.js (precache list baked in)
+    await Deno.writeTextFile(`${outDir}/sw.js`, buildSwJs(Date.now(), allFiles));
+    allFiles.push("sw.js");
+
+    job.state = "done";
+    job.path  = outDir;
+  } catch (e) {
+    job.state = "error";
+    job.error = String(e);
   }
 }
 
@@ -566,6 +1098,100 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
+  // ── Course / module metadata  /api/meta/:course[/:module] ────────────────
+
+  if (seg[0] === "api" && seg[1] === "meta" && (seg.length === 3 || seg.length === 4)) {
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    const course = decodeURIComponent(seg[2]);
+
+    if (seg.length === 3) {
+      // Course-level meta
+      if (method === "GET") {
+        return Response.json(await readMeta<CourseMeta>(courseMetaFile(pd, course)));
+      }
+      if (method === "PUT") {
+        const body = await req.json() as CourseMeta;
+        await writeMeta(courseMetaFile(pd, course), body);
+        return new Response(null, { status: 204 });
+      }
+    }
+
+    if (seg.length === 4) {
+      // Module-level meta
+      const mod = decodeURIComponent(seg[3]);
+      if (method === "GET") {
+        return Response.json(await readMeta<ModuleMeta>(moduleMetaFile(pd, course, mod)));
+      }
+      if (method === "PUT") {
+        const body = await req.json() as ModuleMeta;
+        await writeMeta(moduleMetaFile(pd, course, mod), body);
+        return new Response(null, { status: 204 });
+      }
+    }
+  }
+
+  // ── Export config  /api/export/config ────────────────────────────────────
+
+  if (pathname === "/api/export/config" && method === "GET") {
+    const { exportDir } = await readConfig();
+    return Response.json({ exportDir });
+  }
+
+  if (pathname === "/api/export/config" && method === "POST") {
+    const body = await req.json() as { exportDir?: unknown };
+    if (typeof body.exportDir !== "string") {
+      return Response.json({ error: "exportDir must be a string" }, { status: 400 });
+    }
+    try {
+      if (!(await Deno.stat(body.exportDir)).isDirectory) throw 0;
+    } catch {
+      return Response.json({ error: "Path does not exist or is not a directory" }, { status: 400 });
+    }
+    const config = await readConfig();
+    config.exportDir = body.exportDir;
+    await writeConfig(config);
+    return Response.json({ exportDir: config.exportDir });
+  }
+
+  // ── Export  POST /api/export/:course | GET /api/export/:course/status ────
+
+  if (seg[0] === "api" && seg[1] === "export" && seg.length >= 3 && seg[2] !== "config") {
+    const { projectDir: pd, exportDir: expDir } = await readConfig();
+    if (!expDir) return Response.json({ error: "Export directory not configured" }, { status: 503 });
+
+    const course = decodeURIComponent(seg[2]);
+
+    // GET /api/export/:course/status
+    if (method === "GET" && seg[3] === "status") {
+      const job = exportJobs.get(course);
+      if (!job) return Response.json({ state: "idle", progress: { done: 0, total: 0 }, modules: {} });
+      return Response.json({
+        state: job.state, progress: job.progress, modules: job.modules,
+        path: job.path, error: job.error,
+      });
+    }
+
+    // POST /api/export/:course — trigger export
+    if (method === "POST" && seg.length === 3) {
+      if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+      if (!FFMPEG_AVAILABLE) {
+        return Response.json({ error: "ffmpeg not found — audio export unavailable" }, { status: 503 });
+      }
+      const existing = exportJobs.get(course);
+      if (existing?.state === "running") {
+        return Response.json({ error: "Export already in progress" }, { status: 409 });
+      }
+      const courseSlug = slugify(course);
+      const outPath = `${expDir}/${courseSlug}`;
+      exportJobs.set(course, {
+        state: "running", progress: { done: 0, total: 0 }, modules: {}, path: outPath,
+      });
+      runExport(course, pd, expDir); // fire-and-forget; poll /status for progress
+      return Response.json({ ok: true, path: outPath });
+    }
+  }
+
   return serveFile(pathname);
 }
 
@@ -581,7 +1207,7 @@ function findPort(from: number): number {
 
 // Ensure config dir exists
 await Deno.mkdir(CONFDIR, { recursive: true });
-try { await Deno.stat(CONFILE); } catch { await writeConfig({ projectDir: null }); }
+try { await Deno.stat(CONFILE); } catch { await writeConfig({ projectDir: null, exportDir: null }); }
 
 // Start TTS server subprocess
 const ttsPort = findPort(7800);
@@ -610,6 +1236,18 @@ try {
   console.log(`  tts server  →  http://localhost:${ttsPort}`);
 } catch (e) {
   console.error(`  Warning: TTS server failed to start: ${(e as Error).message}`);
+}
+
+// Check ffmpeg availability
+try {
+  const check = await new Deno.Command("ffmpeg", { args: ["-version"], stdout: "null", stderr: "null" }).output();
+  FFMPEG_AVAILABLE = check.success;
+} catch { /* ffmpeg not found */ }
+if (!FFMPEG_AVAILABLE) {
+  console.error("  [WARN] ffmpeg not found — course audio export will be unavailable.");
+  console.error("         Install ffmpeg and restart to enable this feature.\n");
+} else {
+  console.log("  ffmpeg  →  available");
 }
 
 // Shut down TTS server when the main process exits

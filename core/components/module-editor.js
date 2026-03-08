@@ -25,11 +25,17 @@ const STYLES = `
   /* ── Nav bar ── */
   .editor-nav {
     display: flex;
-    align-items: center;
-    gap: 14px;
+    flex-direction: column;
     padding: 10px 20px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
+    gap: 8px;
+  }
+
+  .nav-main {
+    display: flex;
+    align-items: center;
+    gap: 14px;
   }
 
   .back-btn {
@@ -195,6 +201,60 @@ const STYLES = `
     color: var(--text-muted);
   }
 
+  /* ── Mobile tab toggle (≤800px) ── */
+  .tab-bar {
+    display: none;
+  }
+
+  .tab-row {
+    display: none;
+  }
+
+  @media (max-width: 800px) {
+    .tab-row {
+      display: flex;
+    }
+    .tab-bar {
+      display: flex;
+      flex: 1;
+      gap: 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .tab-btn {
+      flex: 1;
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 12px;
+      font-family: var(--font);
+      padding: 5px 16px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .tab-btn + .tab-btn {
+      border-left: 1px solid var(--border);
+    }
+    .tab-btn.active {
+      background: var(--accent-deep);
+      color: #fff;
+    }
+
+    .top-row {
+      grid-template-columns: 1fr;
+    }
+    .top-row .editor-pane:nth-child(2) {
+      display: none;
+    }
+    .top-row.show-preview .editor-pane:nth-child(1) {
+      display: none;
+    }
+    .top-row.show-preview .editor-pane:nth-child(2) {
+      display: flex;
+    }
+  }
+
   .slides-textarea {
     flex: 1;
     min-height: 240px;
@@ -306,23 +366,31 @@ class ModuleEditor extends HTMLElement {
     const res   = await fetch(`/api/track/${enc(this.course)}/${enc(this.module)}`);
     const clips = await res.json().catch(() => []);
 
-    this.#playing   = true;
-    this.#playStart = performance.now();
-    this.#updatePlayBtn();
-
-    // Schedule audio clips
-    this.#playTimeouts = clips.map(clip => {
-      return setTimeout(() => {
-        const url   = `/api/audio/${enc(this.course)}/${enc(this.module)}/${enc(clip.file)}`;
-        const audio = new Audio(url);
-        audio.play().catch(() => {});
-        this.#playAudios.push(audio);
-      }, clip.startTime * 1000);
-    });
-
-    const totalDuration = slides.reduce((sum, s) => sum + s.duration, 0);
     const preview = this.shadowRoot.querySelector('#preview');
     const track   = this.shadowRoot.querySelector('#track');
+
+    // Compute time offset from the currently viewed slide
+    const startIdx = preview?.currentIndex ?? 0;
+    let startOffset = 0;
+    for (let i = 0; i < startIdx && i < slides.length; i++) startOffset += slides[i].duration;
+
+    this.#playing   = true;
+    this.#playStart = performance.now() - startOffset * 1000;
+    this.#updatePlayBtn();
+
+    // Schedule audio clips that start at or after the start offset
+    this.#playTimeouts = clips
+      .filter(clip => clip.startTime >= startOffset)
+      .map(clip => {
+        return setTimeout(() => {
+          const url   = `/api/audio/${enc(this.course)}/${enc(this.module)}/${enc(clip.file)}`;
+          const audio = new Audio(url);
+          audio.play().catch(() => {});
+          this.#playAudios.push(audio);
+        }, (clip.startTime - startOffset) * 1000);
+      });
+
+    const totalDuration = slides.reduce((sum, s) => sum + s.duration, 0);
 
     const tick = () => {
       if (!this.#playing) return;
@@ -352,11 +420,13 @@ class ModuleEditor extends HTMLElement {
     cancelAnimationFrame(this.#playRaf);
     this.#playRaf = null;
     this.#playTimeouts.forEach(t => clearTimeout(t));
-    this.#playAudios.forEach(a => { try { a.pause(); } catch {} });
+    this.#playAudios.forEach(a => { try { a.pause(); } catch {/* */} });
     this.#playTimeouts = [];
     this.#playAudios  = [];
-    const track = this.shadowRoot?.querySelector('#track');
-    if (track) track.playTime = -1;
+    const track   = this.shadowRoot?.querySelector('#track');
+    const preview = this.shadowRoot?.querySelector('#preview');
+    if (track)   track.playTime   = -1;
+    if (preview) preview.slideTime = -1;
     this.#updatePlayBtn();
   }
 
@@ -379,11 +449,19 @@ class ModuleEditor extends HTMLElement {
       <style>${STYLES}</style>
 
       <div class="editor-nav">
-        <button class="back-btn" id="btn-back">← Back</button>
-        <span class="save-status" id="save-status">${esc(this.#saveStatus)}</span>
-        <button class="files-btn" id="btn-files">Files</button>
-        <button class="syntax-btn" id="btn-syntax">? Syntax</button>
-        <button class="play-btn" id="btn-play">▶ Play</button>
+        <div class="nav-main">
+          <button class="back-btn" id="btn-back">← Back</button>
+          <span class="save-status" id="save-status">${esc(this.#saveStatus)}</span>
+          <button class="files-btn" id="btn-files">Files</button>
+          <button class="syntax-btn" id="btn-syntax">? Syntax</button>
+          <button class="play-btn" id="btn-play">▶ Play</button>
+        </div>
+        <div class="tab-row">
+          <div class="tab-bar">
+            <button class="tab-btn active" id="tab-code">Code</button>
+            <button class="tab-btn" id="tab-preview">Preview</button>
+          </div>
+        </div>
       </div>
 
       <div class="body">
@@ -444,6 +522,21 @@ class ModuleEditor extends HTMLElement {
     sr.querySelector('#btn-back').addEventListener('click', () => {
       this.#stop();
       this.dispatchEvent(new CustomEvent('nav-back', { bubbles: true, composed: true }));
+    });
+
+    // Mobile tab toggle
+    const topRow  = sr.querySelector('.top-row');
+    const tabCode = sr.querySelector('#tab-code');
+    const tabPrev = sr.querySelector('#tab-preview');
+    tabCode.addEventListener('click', () => {
+      topRow.classList.remove('show-preview');
+      tabCode.classList.add('active');
+      tabPrev.classList.remove('active');
+    });
+    tabPrev.addEventListener('click', () => {
+      topRow.classList.add('show-preview');
+      tabPrev.classList.add('active');
+      tabCode.classList.remove('active');
     });
 
     // Files modal
