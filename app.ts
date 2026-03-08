@@ -334,7 +334,7 @@ async function runHlsExport(clips: TrackClip[], aDir: string, outDir: string, sl
       "-filter_complex", filterComplex,
       "-map", "[out]",
       "-t", String(totalDuration),
-      "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+      "-c:a", "aac", "-b:a", "64k", "-ar", "22050", "-ac", "1",
       "-hls_time", "4",
       "-hls_playlist_type", "vod",
       "-hls_segment_filename", `${outDir}/audio-%03d.ts`,
@@ -401,7 +401,6 @@ function buildModuleHtml(opts: {
 ${body}
     </article>
   </main>
-  <script src="../../hls.js"></script>
   <script type="module" src="../../player.js"></script>
 </body>
 </html>`;
@@ -453,35 +452,48 @@ ${modList}
     </nav>
     <section id="player"></section>
   </main>
-  <script src="hls.js"></script>
   <script type="module" src="player.js"></script>
 </body>
 </html>`;
 }
 
-function buildWebManifest(meta: CourseMeta, courseName: string): Record<string, unknown> {
+function buildWebManifest(meta: CourseMeta, courseName: string, pngIconSizes: number[] = []): Record<string, unknown> {
   const name = meta.title ?? courseName;
   const words = name.split(/\s+/);
   const shortName = words.length > 3 ? words.slice(0, 3).join(" ") : name;
-  return {
+  const icons = pngIconSizes.map(size => ({
+    src: `assets/icon-${size}.png`, sizes: `${size}x${size}`, type: "image/png", purpose: "any",
+  }));
+  const manifest: Record<string, unknown> = {
     name, short_name: shortName,
     description: meta.description ?? "",
     start_url: "./index.html",
     display: "standalone",
     background_color: "#0d0d0f",
     theme_color: "#0d0d0f",
-    icons: [{ src: "assets/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
   };
+  if (icons.length) manifest.icons = icons;
+  return manifest;
 }
 
 function buildSwJs(timestamp: number, assets: string[]): string {
-  const list = JSON.stringify(assets.map(a => `./${a}`), null, 2);
+  // Exclude HLS transport-stream segments from precache: Caddy returns 206
+  // (partial content) for media files which Cache.addAll() rejects.
+  // Segments are fetched live on demand via the network-fallback fetch handler.
+  const precache = assets.filter(a => !a.endsWith('.ts'));
+  const list = JSON.stringify(precache.map(a => `./${a}`), null, 2);
   return `// Generated service worker — useful course export
 const CACHE = 'useful-course-${timestamp}';
 const ASSETS = ${list};
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
+  e.waitUntil(
+    caches.open(CACHE).then(c =>
+      Promise.all(ASSETS.map(url =>
+        fetch(url).then(r => { if (r.status === 200) return c.put(url, r); }).catch(() => {})
+      ))
+    )
+  );
   self.skipWaiting();
 });
 
@@ -554,6 +566,16 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
     try { await Deno.copyFile(`${BASE}/core/export/icon.svg`, `${outDir}/assets/icon.svg`); }
     catch { await Deno.writeTextFile(`${outDir}/assets/icon.svg`, DEFAULT_ICON_SVG); }
     allFiles.push("assets/icon.svg");
+
+    // PNG icons for PWA manifest (pre-generated; see core/export/icon-*.png)
+    const pngIconSizes: number[] = [];
+    for (const size of [192, 512]) {
+      try {
+        await Deno.copyFile(`${BASE}/core/export/icon-${size}.png`, `${outDir}/assets/icon-${size}.png`);
+        allFiles.push(`assets/icon-${size}.png`);
+        pngIconSizes.push(size);
+      } catch { /* PNG missing — skip */ }
+    }
 
     // Favicon
     try { await Deno.copyFile(`${BASE}/core/export/favicon.svg`, `${outDir}/favicon.svg`); }
@@ -672,7 +694,7 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
 
     // manifest.webmanifest
     await Deno.writeTextFile(`${outDir}/manifest.webmanifest`,
-      JSON.stringify(buildWebManifest(courseMeta, course), null, 2));
+      JSON.stringify(buildWebManifest(courseMeta, course, pngIconSizes), null, 2));
     allFiles.push("manifest.webmanifest");
 
     // sw-manifest.json (debug / tooling)

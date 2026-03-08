@@ -1,6 +1,5 @@
 // player.js — standalone course player for useful exports
 // Copied verbatim into each course export directory.
-// Depends on hls.js being loaded before this module.
 
 // ── Inline parser (ported from slide-parser.js) ──────────────────────────────
 
@@ -88,19 +87,18 @@ function fmtTime(secs) {
 // whether the player is at course root or in modules/<slug>/.
 
 function buildSlideHTML(slide, courseRoot) {
-  const textColor  = autoTextColor(slide.bg);
-  const bgStyle    = slide.bg ? `background:${slide.bg};` : '';
-  const colorStyle = `color:${textColor};`;
-  let headerHtml   = '';
+  const textColor = autoTextColor(slide.bg);
+  const bgAttr    = slide.bg ? ` data-bg="${escAttr(slide.bg)}"` : '';
+  let headerHtml  = '';
   if (slide.header) {
-    headerHtml = `<div class="sp-header" style="${colorStyle}">
+    headerHtml = `<div class="sp-header">
       <span class="sp-hdr-left">${spansToHTML(parseInline(slide.header.left ?? ''))}</span>
       <span class="sp-hdr-right">${spansToHTML(parseInline(slide.header.right ?? ''))}</span>
     </div>`;
   }
   const blocks   = slide.blocks ?? slide.body ?? [];
   const bodyHtml = buildBodyHTML(blocks, textColor, courseRoot, '');
-  return `<div class="sp-slide" style="${bgStyle}${colorStyle}">
+  return `<div class="sp-slide"${bgAttr} data-color="${escAttr(textColor)}">
     ${headerHtml}
     <div class="sp-body" id="sp-body">${bodyHtml}</div>
   </div>`;
@@ -116,7 +114,7 @@ function buildBlockHTML(b, textColor, courseRoot, bid) {
   switch (b.type) {
     case 'paragraph':
       return `<p class="sp-para sp-block ${b.size !== 'normal' ? b.size : ''} ${b.align !== 'left' ? b.align : ''}"
-                 style="${b.color ? `color:${b.color}` : ''}"
+                 ${b.color ? `data-color="${escAttr(b.color)}"` : ''}
                  data-block="${bid}">${spansToHTML(b.spans)}</p>`;
 
     case 'heading': {
@@ -136,7 +134,7 @@ function buildBlockHTML(b, textColor, courseRoot, bid) {
       // b.src is "assets/<file>" (rewritten by export engine); resolve relative to courseRoot
       const src = b.src.startsWith('assets/') ? `${courseRoot}/${b.src}` : b.src;
       return `<div class="sp-img-wrap sp-block" data-block="${bid}">
-        <img src="${escAttr(src)}" alt="${escAttr(b.alt ?? '')}" style="object-fit:${fit}">
+        <img src="${escAttr(src)}" alt="${escAttr(b.alt ?? '')}" data-fit="${escAttr(fit)}">
       </div>`;
     }
 
@@ -145,10 +143,10 @@ function buildBlockHTML(b, textColor, courseRoot, bid) {
 
     case 'columns': {
       const cols = b.cols.map((col, ci) => {
-        const bg      = col.bg ? `background:${col.bg};` : '';
-        const tc      = col.bg ? `color:${autoTextColor(col.bg)};` : '';
-        const content = buildBodyHTML(col.blocks, col.bg ? autoTextColor(col.bg) : textColor, courseRoot, `${bid}-${ci}`);
-        return `<div class="sp-col-inner" style="width:${col.width}%;${bg}${tc}">${content}</div>`;
+        const bgAttr    = col.bg ? ` data-bg="${escAttr(col.bg)}"` : '';
+        const colorAttr = col.bg ? ` data-color="${escAttr(autoTextColor(col.bg))}"` : '';
+        const content   = buildBodyHTML(col.blocks, col.bg ? autoTextColor(col.bg) : textColor, courseRoot, `${bid}-${ci}`);
+        return `<div class="sp-col-inner" data-width="${col.width}"${bgAttr}${colorAttr}>${content}</div>`;
       });
       return `<div class="sp-columns sp-block" data-block="${bid}">${cols.join('')}</div>`;
     }
@@ -169,6 +167,19 @@ function buildBlockHTML(b, textColor, courseRoot, bid) {
     }
 
     default: return '';
+  }
+}
+
+// ── Post-render style application (CSP: no inline style= attrs) ──────────────
+// data-bg / data-color / data-width / data-fit are set by the HTML builders
+// and applied here via CSSOM, which is not restricted by style-src.
+
+function applyDataStyles(root) {
+  for (const el of root.querySelectorAll('[data-bg],[data-color],[data-width],[data-fit]')) {
+    if (el.dataset.bg)    el.style.background = el.dataset.bg;
+    if (el.dataset.color) el.style.color       = el.dataset.color;
+    if (el.dataset.width) el.style.width       = el.dataset.width + '%';
+    if (el.dataset.fit)   el.style.objectFit   = el.dataset.fit;
   }
 }
 
@@ -262,6 +273,7 @@ const state = {
   slidesData:    null,
   slideIndex:    0,
   slideTime:     0,
+  playbackRate:  1,
   hls:           null,
   audio:         null,
   playing:       false,
@@ -302,6 +314,11 @@ async function init() {
   state.courseRoot = new URL(courseRootRaw + '/', location.href).href.replace(/\/$/, '');
   state.moduleSlug = appEl.dataset.module     || null;
 
+  // Pin favicon to an absolute URL so it doesn't break when history.pushState
+  // changes the page URL (browsers re-resolve <link rel="icon"> on URL changes).
+  const favLink = document.querySelector('link[rel="icon"]');
+  if (favLink) favLink.href = `${state.courseRoot}/favicon.svg`;
+
   // Service worker
   if ('serviceWorker' in navigator) {
     const swUrl   = `${state.courseRoot}/sw.js`;
@@ -327,7 +344,7 @@ async function init() {
     const resp   = await fetch(`${state.courseRoot}/manifest.json`);
     state.manifest = await resp.json();
   } catch {
-    appEl.innerHTML = '<p style="color:#e8e8f0;padding:2rem;font-family:sans-serif">Failed to load course manifest.</p>';
+    appEl.innerHTML = '<p class="error-msg">Failed to load course manifest.</p>';
     return;
   }
 
@@ -382,10 +399,17 @@ function renderShell(appEl) {
             <span id="time-total">0:00</span>
           </div>
           <div id="controls-right">
-            <span id="slide-counter"></span>
+            <select class="ctrl-btn" id="speed-select" title="Playback speed">
+              <option value="0.5">0.5×</option>
+              <option value="0.75">0.75×</option>
+              <option value="1" selected>1×</option>
+              <option value="1.25">1.25×</option>
+              <option value="1.5">1.5×</option>
+              <option value="1.75">1.75×</option>
+              <option value="2">2×</option>
+            </select>
             <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen">⛶</button>
             <button class="ctrl-btn" id="btn-lessons"    title="Lessons">☰ Lessons</button>
-            <button class="ctrl-btn" id="btn-install"    title="Install course" hidden>↓ Install</button>
           </div>
         </div>
         <div id="resume-prompt" hidden>
@@ -395,7 +419,10 @@ function renderShell(appEl) {
         </div>
       </div>
       <nav id="module-sidebar">
-        <div id="sidebar-title">${escHtml(state.manifest.title || '')}</div>
+        <div id="sidebar-title">
+          <span id="sidebar-title-text">${escHtml(state.manifest.title || '')}</span>
+          <button class="ctrl-btn" id="btn-install" title="Install for offline" hidden>⬇</button>
+        </div>
         <ul id="module-list"></ul>
         <div id="course-progress-wrap">
           <div id="course-progress-label"></div>
@@ -417,6 +444,17 @@ function renderShell(appEl) {
   document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
   document.getElementById('btn-lessons').addEventListener('click',    toggleSidebar);
   document.getElementById('btn-install').addEventListener('click',    doInstall);
+  document.getElementById('speed-select').addEventListener('change', e => {
+    const rate = parseFloat(e.target.value) || 1;
+    // In timer mode, accumulate elapsed before changing rate so time doesn't jump
+    if (state.playing && (!state.slidesData?.audio || state._audioEnded)) {
+      const elapsed = (performance.now() - state.timerBase) / 1000 * state.playbackRate;
+      state.timerOffset += elapsed;
+      state.timerBase = performance.now();
+    }
+    state.playbackRate = rate;
+    if (state.slidesData?.audio) state.audio.playbackRate = rate;
+  });
 
   const scrubber = document.getElementById('progress-scrubber');
   scrubber.addEventListener('input', () => {
@@ -438,7 +476,17 @@ function renderShell(appEl) {
   // Audio events
   state.audio.addEventListener('timeupdate', onTimeUpdate);
   state.audio.addEventListener('play',  () => { state.playing = true;  _updatePlayBtn(); });
-  state.audio.addEventListener('pause', () => { state.playing = false; _updatePlayBtn(); saveCurrentProgress(); });
+  state.audio.addEventListener('pause', () => {
+    state.playing = false;
+    // If audio ended naturally and slides still have content, the 'ended' event (which fires
+    // after 'pause') will transition to timer mode. Suppress controls restore to avoid a flash.
+    const audioTime = state.audio.currentTime || 0;
+    const audioDur  = isFinite(state.audio.duration) ? state.audio.duration : -1;
+    const slidesDur = state.slidesData?.totalDuration || 0;
+    const pendingTimerMode = audioDur > 0 && (audioDur - audioTime) < 0.5 && audioTime < slidesDur - 0.1;
+    if (!pendingTimerMode) _updatePlayBtn();
+    saveCurrentProgress();
+  });
   state.audio.addEventListener('ended', () => {
     // If slides still have time remaining, continue in timer mode rather than ending the module.
     // Note: the browser dispatches 'pause' before 'ended' on natural end, so state.playing is
@@ -450,7 +498,9 @@ function renderShell(appEl) {
       state.playing      = true;   // restore: pause event set this to false before ended fired
       state.timerOffset  = audioTime;
       state.timerBase    = performance.now();
-      _updatePlayBtn();
+      // Update button text only — do NOT call _updatePlayBtn() as it would show controls
+      const btn = document.getElementById('btn-play-pause');
+      if (btn) btn.textContent = '⏸';
       _timerTick();
     } else {
       onModuleEnded();
@@ -505,14 +555,14 @@ function _renderModuleListHTML() {
         <span class="module-title">${escHtml(m.title || m.slug)}</span>
         ${dur ? `<span class="module-dur">${escHtml(dur)}</span>` : ''}
       </div>
-      ${pct > 0 ? `<div class="module-progress"><div class="module-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>` : ''}
+      ${pct > 0 ? `<div class="module-progress"><div class="module-progress-fill" data-width="${pct.toFixed(1)}"></div></div>` : ''}
     </li>`;
   }).join('');
 }
 
 function _updateModuleList() {
   const list = document.getElementById('module-list');
-  if (list) list.innerHTML = _renderModuleListHTML();
+  if (list) { list.innerHTML = _renderModuleListHTML(); applyDataStyles(list); }
   // Highlight active module
   document.querySelectorAll('.module-item').forEach(el =>
     el.classList.toggle('is-active', el.dataset.slug === state.moduleSlug)
@@ -521,6 +571,48 @@ function _updateModuleList() {
   const completed = Object.values(_getAllProgress()).filter(p => p?.completed).length;
   const label = document.getElementById('course-progress-label');
   if (label) label.textContent = `Progress: ${completed} / ${state.manifest.modules.length} modules`;
+}
+
+// ── Slide asset preloading ─────────────────────────────────────────────────────
+
+function _preloadBlocks(blocks) {
+  for (const b of blocks) {
+    if (b.type === 'image' && b.src) {
+      const src = b.src.startsWith('assets/') ? `${state.courseRoot}/${b.src}` : b.src;
+      new Image().src = src;
+    } else if (b.type === 'columns') {
+      for (const col of b.cols) _preloadBlocks(col.blocks ?? []);
+    } else if (b.type === 'emph') {
+      _preloadBlocks(b.blocks ?? []);
+    }
+  }
+}
+
+function _preloadSlideImages(slides) {
+  for (const slide of slides) _preloadBlocks(slide.blocks ?? slide.body ?? []);
+}
+
+// ── HLS lazy loader ────────────────────────────────────────────────────────────
+// For browsers with native HLS (Safari) we skip hls.js entirely.
+// For others we inject it as a classic script on first need.
+
+let _hlsLoad = null;
+
+function loadHlsIfNeeded() {
+  if (document.createElement('audio').canPlayType('application/vnd.apple.mpegurl')) {
+    return Promise.resolve(); // native HLS — no library needed
+  }
+  if (typeof Hls !== 'undefined') return Promise.resolve(); // already loaded
+  if (!_hlsLoad) {
+    _hlsLoad = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = `${state.courseRoot}/hls.js`;
+      s.onload  = resolve;
+      s.onerror = () => { _hlsLoad = null; reject(new Error('hls.js failed to load')); };
+      document.head.appendChild(s);
+    });
+  }
+  return _hlsLoad;
 }
 
 // ── Module loading ─────────────────────────────────────────────────────────────
@@ -547,6 +639,9 @@ async function loadModule(slug, pushState, autoPlay = false) {
   }
   state.slidesData = slidesData;
 
+  // Preload images for all slides so they're ready before playback reaches them
+  _preloadSlideImages(slidesData.slides ?? []);
+
   // Update browser URL
   const modEntry = state.manifest.modules.find(m => m.slug === slug);
   const modPath  = modEntry?.path ? `${state.courseRoot}/${modEntry.path}` : null;
@@ -562,6 +657,7 @@ async function loadModule(slug, pushState, autoPlay = false) {
   // Setup audio
   if (slidesData.audio) {
     const hlsUrl = `${state.courseRoot}/modules/${slug}/${slidesData.audio}`;
+    await loadHlsIfNeeded().catch(() => {});
     if (typeof Hls !== 'undefined' && Hls.isSupported()) {
       state.hls = new Hls();
       state.hls.loadSource(hlsUrl);
@@ -569,6 +665,7 @@ async function loadModule(slug, pushState, autoPlay = false) {
     } else if (state.audio.canPlayType('application/vnd.apple.mpegurl')) {
       state.audio.src = hlsUrl;
     }
+    state.audio.playbackRate = state.playbackRate;
   }
 
   // Duration display
@@ -600,10 +697,8 @@ function renderSlide() {
   if (!slide) { canvas.innerHTML = ''; return; }
 
   canvas.innerHTML = buildSlideHTML(slide, state.courseRoot);
+  applyDataStyles(canvas);
   requestAnimationFrame(scaleCanvas);
-
-  const counter = document.getElementById('slide-counter');
-  if (counter) counter.textContent = `${state.slideIndex + 1} / ${slides.length}`;
 
   // Apply initial timing state to new slide
   // slideTime of -1 means not playing; updateTiming guards on this for emph activation
@@ -621,7 +716,7 @@ function scaleCanvas() {
 // ── Playback ──────────────────────────────────────────────────────────────────
 
 function togglePlay() {
-  if (state.slidesData?.audio) {
+  if (state.slidesData?.audio && !state._audioEnded) {
     // HLS / native audio mode
     if (state.playing) {
       state.audio.pause();
@@ -629,7 +724,7 @@ function togglePlay() {
       state.audio.play().catch(() => {});
     }
   } else {
-    // Timer mode (no audio)
+    // Timer mode (no audio, or audio ended before slides finished)
     if (state.playing) {
       _timerPause();
     } else {
@@ -646,6 +741,20 @@ function currentTime() {
 function seek(t) {
   const dur     = state.slidesData?.totalDuration || 0;
   const clamped = Math.max(0, Math.min(t, dur));
+
+  // If audio ended early and we're seeking back into the audio's range, restore audio mode.
+  if (state.slidesData?.audio && state._audioEnded) {
+    const audioDur = isFinite(state.audio.duration) ? state.audio.duration : 0;
+    if (clamped < audioDur - 0.1) {
+      state._audioEnded = false;
+      if (state.timerRaf) { cancelAnimationFrame(state.timerRaf); state.timerRaf = null; }
+      state.audio.currentTime = clamped;
+      if (state.playing) state.audio.play().catch(() => {});
+      onTimeUpdate();
+      return;
+    }
+  }
+
   if (state.slidesData?.audio && !state._audioEnded) {
     state.audio.currentTime = clamped;
     onTimeUpdate();
@@ -664,7 +773,7 @@ function _timerPlay() {
   _timerTick();
 }
 function _timerPause() {
-  const elapsed = (performance.now() - state.timerBase) / 1000;
+  const elapsed = (performance.now() - state.timerBase) / 1000 * state.playbackRate;
   state.timerOffset += elapsed;
   state.playing = false;
   _updatePlayBtn();
@@ -674,7 +783,7 @@ function _timerPause() {
 function _timerTick() {
   // Run in timer mode when there's no audio, or when audio ended early and slides continue
   if (!state.playing || (state.slidesData?.audio && !state._audioEnded)) return;
-  const elapsed = (performance.now() - state.timerBase) / 1000;
+  const elapsed = (performance.now() - state.timerBase) / 1000 * state.playbackRate;
   const t       = state.timerOffset + elapsed;
   const dur     = state.slidesData?.totalDuration || 0;
   if (t >= dur) {

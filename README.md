@@ -36,12 +36,13 @@ The current name was chosen because I want to build something _useful_.
 - [x] Local TTS and audio editor for voiceover of content
 - [x] Voiceover and slide (and animation) alignment tool
 - [x] Tools for turning structured content into slides
-- [ ] Process for publishing content as website
+- [x] Process for publishing content as website
 - [ ] Process for converting course into videos
-- [ ] Documentation on how to use (preferably created with _useful_).
+- [ ] Documentation on how to use (preferably created with _useful_)
 - [ ] Tools for creating optional interactive quizes
 - [ ] Rich text editor for fleshing out initial draft course
 - [ ] Tools for converting draft into a structured course
+- [ ] Archive export / import format for editing and playback
 
 ## Potential tools
 
