@@ -620,8 +620,11 @@ function loadHlsIfNeeded() {
 // ── Module loading ─────────────────────────────────────────────────────────────
 
 async function loadModule(slug, pushState, autoPlay = false) {
-  // Save and stop current playback
+  // Save and stop current playback. Null out slidesData before pausing so the
+  // async 'pause' event (queued by audio.pause()) doesn't overwrite the new
+  // module's saved progress with position 0 via saveCurrentProgress().
   saveCurrentProgress();
+  state.slidesData = null;
   _stopPlayback();
 
   state.moduleSlug  = slug;
