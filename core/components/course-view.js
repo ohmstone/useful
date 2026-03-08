@@ -13,6 +13,7 @@ const STYLES = `
     justify-content: space-between;
     margin-bottom: 20px;
     gap: 8px;
+    flex-wrap: wrap;
   }
 
   .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
