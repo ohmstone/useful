@@ -1,6 +1,8 @@
 // <course-view course="..."> — shows the ordered module list for a course.
 // Each module card dispatches 'module-open' (bubbles, composed) when clicked.
 // Modules can be reordered by dragging; order is persisted via PUT /api/modules/:course.
+// Also provides course metadata editing (title, description, author, tags, thumbnail)
+// and export directory configuration.
 
 const STYLES = `
   :host { display: block; }
@@ -10,7 +12,12 @@ const STYLES = `
     align-items: center;
     justify-content: space-between;
     margin-bottom: 20px;
+    gap: 8px;
+    flex-wrap: wrap;
   }
+
+  .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
+  .header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
   .back-btn {
     display: inline-flex;
@@ -24,6 +31,7 @@ const STYLES = `
     cursor: pointer;
     padding: 4px 0;
     transition: color 0.15s;
+    flex-shrink: 0;
   }
   .back-btn:hover { color: var(--text); }
 
@@ -48,11 +56,13 @@ const STYLES = `
     font-family: var(--font);
     cursor: pointer;
     transition: border-color 0.15s, background 0.15s;
+    white-space: nowrap;
   }
   .btn:hover { border-color: var(--accent); background: var(--surface-raised); }
   .btn:disabled { opacity: 0.45; cursor: not-allowed; }
   .btn-primary { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
   .btn-primary:hover { background: var(--accent); border-color: var(--accent); }
+  .btn-active { border-color: var(--accent); color: var(--accent); }
 
   /* Module list */
   .module-list {
@@ -93,20 +103,31 @@ const STYLES = `
   .module-idx  { font-size: 12px; color: var(--text-dim); }
   .module-arrow { color: var(--text-dim); font-size: 16px; }
 
-  /* Create form */
-  .create-box {
+  /* Panel (metadata form, export dir form) */
+  .panel {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    padding: 14px 18px;
+    padding: 16px 18px;
     margin-bottom: 16px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
   }
-  .create-box label { font-size: 12px; color: var(--text-muted); }
+  .panel-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0;
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: var(--text-muted); }
+  .field-hint { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
   .input {
     width: 100%;
+    box-sizing: border-box;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -119,28 +140,73 @@ const STYLES = `
   }
   .input:focus { border-color: var(--accent); }
   .input::placeholder { color: var(--text-dim); }
-  .form-row { display: flex; gap: 8px; }
+  textarea.input { resize: vertical; min-height: 64px; }
+  .form-row { display: flex; gap: 8px; align-items: center; }
   .form-error { font-size: 12px; color: var(--danger); }
+  .form-ok    { font-size: 12px; color: var(--accent); }
+
+  /* Create module form */
+  .create-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 14px 18px;
+    margin-bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .create-box label { font-size: 12px; color: var(--text-muted); }
 
   .state-msg { font-size: 14px; color: var(--text-muted); padding: 32px 0; text-align: center; }
   .error-msg { font-size: 13px; color: var(--danger); }
+
+  /* Export dir status */
+  .export-dir-path {
+    font-size: 12px;
+    color: var(--accent);
+    font-family: monospace;
+    word-break: break-all;
+  }
+  .export-dir-unset {
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  /* Modules section header */
+  .modules-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
 `;
 
 class CourseView extends HTMLElement {
   static observedAttributes = ['course'];
 
-  #modules  = [];
-  #loading  = true;
-  #creating = false;
-  #error    = null;
-  #dragIdx  = null;
-  #dropIdx  = null;
+  #modules           = [];
+  #meta              = {};
+  #exportDir         = null;
+  #loading           = true;
+  #creating          = false;
+  #editingMeta       = false;
+  #editingExport     = false;
+  #changingExportLoc = false;
+  #exporting         = false;
+  #error             = null;
+  #metaMsg           = null;  // { ok: bool, text: string }
+  #exportMsg         = null;
+  #dragIdx           = null;
+  #dropIdx           = null;
 
   get course() { return this.getAttribute('course') ?? ''; }
 
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+    // dir-browser dispatches dir-selected with composed:true — catch it here
+    this.addEventListener('dir-selected', (e) => this.#onDirSelected(e.detail.path));
   }
 
   connectedCallback()        { this.#load(); }
@@ -151,10 +217,17 @@ class CourseView extends HTMLElement {
     this.#error   = null;
     this.#render();
     try {
-      const res  = await fetch(`/api/modules/${enc(this.course)}`);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      this.#modules = data;
+      const [modsRes, metaRes, exportRes] = await Promise.all([
+        fetch(`/api/modules/${enc(this.course)}`),
+        fetch(`/api/meta/${enc(this.course)}`),
+        fetch('/api/export/config'),
+      ]);
+      const mods = await modsRes.json();
+      if (mods.error) throw new Error(mods.error);
+      this.#modules   = mods;
+      this.#meta      = await metaRes.json();
+      const expCfg    = await exportRes.json();
+      this.#exportDir = expCfg.exportDir ?? null;
     } catch (e) {
       this.#error = e.message;
     }
@@ -170,18 +243,137 @@ class CourseView extends HTMLElement {
     });
   }
 
+  async #saveMeta(data) {
+    const res = await fetch(`/api/meta/${enc(this.course)}`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Failed to save metadata');
+    this.#meta = data;
+  }
+
+  async #onDirSelected(path) {
+    if (!this.#editingExport) return;
+    try {
+      await this.#saveExportDir(path);
+      this.#exportMsg = { ok: true, text: `Set to: ${path}` };
+      this.#changingExportLoc = false;
+    } catch (e) {
+      this.#exportMsg = { ok: false, text: e.message };
+    }
+    this.#render();
+  }
+
+  async #saveExportDir(dir) {
+    const res = await fetch('/api/export/config', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ exportDir: dir }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    this.#exportDir = data.exportDir;
+  }
+
   #render() {
     const sr = this.shadowRoot;
+    const m  = this.#meta;
+
     sr.innerHTML = `
       <style>${STYLES}</style>
 
       <div class="header">
-        <div style="display:flex;align-items:center;gap:16px">
+        <div class="header-left">
           <button class="back-btn" id="btn-back">← Back</button>
-          <span class="section-label">Modules</span>
+          <span class="section-label">${esc(m.title || this.course)}</span>
         </div>
-        ${!this.#creating ? `<button class="btn" id="btn-new">+ New Module</button>` : ''}
+        <div class="header-right">
+          <button class="btn ${this.#editingMeta ? 'btn-active' : ''}" id="btn-meta">
+            ${this.#editingMeta ? '✕ Close' : '✎ Metadata'}
+          </button>
+          <button class="btn ${this.#editingExport ? 'btn-active' : ''}" id="btn-export"
+            title="${this.#exportDir ? `Export dir: ${esc(this.#exportDir)}` : 'Set export directory'}">
+            ${this.#editingExport ? '✕ Close' : '↑ Export'}
+          </button>
+        </div>
       </div>
+
+      ${this.#editingMeta ? `
+        <div class="panel" id="meta-panel">
+          <p class="panel-title">Course Metadata</p>
+
+          <div class="field">
+            <label for="meta-title">Title</label>
+            <input class="input" id="meta-title" type="text"
+              value="${esc(m.title ?? '')}" placeholder="${esc(this.course)}" />
+          </div>
+
+          <div class="field">
+            <label for="meta-desc">Description</label>
+            <textarea class="input" id="meta-desc"
+              placeholder="Brief description for SEO and social sharing">${esc(m.description ?? '')}</textarea>
+          </div>
+
+          <div class="field">
+            <label for="meta-author">Author</label>
+            <input class="input" id="meta-author" type="text"
+              value="${esc(m.author ?? '')}" placeholder="Your name" />
+          </div>
+
+          <div class="field">
+            <label for="meta-tags">Tags</label>
+            <input class="input" id="meta-tags" type="text"
+              value="${esc((m.tags ?? []).join(', '))}" placeholder="e.g. programming, web, beginner" />
+            <span class="field-hint">Comma-separated</span>
+          </div>
+
+          <div class="field">
+            <label for="meta-thumb">Thumbnail</label>
+            <input class="input" id="meta-thumb" type="text"
+              value="${esc(m.thumbnail ?? '')}" placeholder="e.g. thumbnail.jpg (from Files)" />
+            <span class="field-hint">Filename in your project's Files (_inject/) folder</span>
+          </div>
+
+          <div class="form-row">
+            <button class="btn btn-primary" id="btn-meta-save">Save</button>
+            ${this.#metaMsg
+              ? `<span class="${this.#metaMsg.ok ? 'form-ok' : 'form-error'}">${esc(this.#metaMsg.text)}</span>`
+              : ''}
+          </div>
+        </div>
+      ` : ''}
+
+      ${this.#editingExport ? `
+        <div class="panel" id="export-panel">
+          ${(this.#exportDir && !this.#changingExportLoc) ? `
+            <p class="panel-title">Export Course</p>
+            <p style="font-size:13px;color:var(--text-muted);margin:0">
+              Output: <span class="export-dir-path">${esc(this.#exportDir)}</span>
+            </p>
+            ${this.#exportMsg
+              ? `<span class="${this.#exportMsg.ok ? 'form-ok' : 'form-error'}">${esc(this.#exportMsg.text)}</span>`
+              : ''}
+            <div class="form-row">
+              <button class="btn btn-primary" id="btn-do-export" ${this.#exporting ? 'disabled' : ''}>
+                ${this.#exporting ? 'Exporting…' : '↑ Export Now'}
+              </button>
+              <button class="btn" id="btn-change-loc">Change Location</button>
+            </div>
+          ` : `
+            <p class="panel-title">Export Directory</p>
+            <p style="font-size:13px;color:var(--text-muted);margin:0">
+              ${this.#exportDir
+                ? `Current: <span class="export-dir-path">${esc(this.#exportDir)}</span>`
+                : '<span class="export-dir-unset">Not set — browse to select a folder.</span>'}
+            </p>
+            ${this.#exportMsg
+              ? `<span class="${this.#exportMsg.ok ? 'form-ok' : 'form-error'}">${esc(this.#exportMsg.text)}</span>`
+              : ''}
+            <dir-browser></dir-browser>
+          `}
+        </div>
+      ` : ''}
 
       ${this.#creating ? `
         <form class="create-box" id="form-create">
@@ -200,16 +392,20 @@ class CourseView extends HTMLElement {
       ${this.#error   ? `<p class="error-msg">${esc(this.#error)}</p>` : ''}
 
       ${!this.#loading && !this.#error ? `
+        <div class="modules-header">
+          <span class="section-label">Modules</span>
+          ${!this.#creating ? `<button class="btn" id="btn-new">+ New Module</button>` : ''}
+        </div>
         <div class="module-list" id="list">
           ${this.#modules.length === 0
             ? `<p class="state-msg">No modules yet — create your first one.</p>`
-            : this.#modules.map((m, i) => `
-                <div class="module-card" data-name="${esc(m)}" data-idx="${i}" draggable="true">
+            : this.#modules.map((mod, i) => `
+                <div class="module-card" data-name="${esc(mod)}" data-idx="${i}" draggable="true">
                   <div class="module-left">
                     <span class="drag-handle" title="Drag to reorder">⠿</span>
                     <div>
                       <div class="module-idx">${i + 1}</div>
-                      <div class="module-name">${esc(m)}</div>
+                      <div class="module-name">${esc(mod)}</div>
                     </div>
                   </div>
                   <span class="module-arrow">›</span>
@@ -219,10 +415,77 @@ class CourseView extends HTMLElement {
       ` : ''}
     `;
 
+    // ── Back ────────────────────────────────────────────────────────────────
     sr.querySelector('#btn-back')?.addEventListener('click', () => {
       this.dispatchEvent(new CustomEvent('nav-back', { bubbles: true, composed: true }));
     });
 
+    // ── Metadata panel toggle ───────────────────────────────────────────────
+    sr.querySelector('#btn-meta')?.addEventListener('click', () => {
+      this.#editingMeta  = !this.#editingMeta;
+      this.#editingExport = false;
+      this.#metaMsg = null;
+      this.#render();
+      if (this.#editingMeta) sr.querySelector('#meta-title')?.focus();
+    });
+
+    sr.querySelector('#btn-meta-save')?.addEventListener('click', async () => {
+      const btn = sr.querySelector('#btn-meta-save');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const tags = sr.querySelector('#meta-tags').value
+          .split(',').map(t => t.trim()).filter(Boolean);
+        const data = {
+          title:       sr.querySelector('#meta-title').value.trim()   || undefined,
+          description: sr.querySelector('#meta-desc').value.trim()    || undefined,
+          author:      sr.querySelector('#meta-author').value.trim()  || undefined,
+          thumbnail:   sr.querySelector('#meta-thumb').value.trim()   || undefined,
+          tags:        tags.length ? tags : undefined,
+        };
+        // strip undefined fields
+        Object.keys(data).forEach(k => data[k] === undefined && delete data[k]);
+        await this.#saveMeta(data);
+        this.#metaMsg = { ok: true, text: 'Saved' };
+      } catch (e) {
+        this.#metaMsg = { ok: false, text: e.message };
+      }
+      this.#render();
+    });
+
+    // ── Export panel toggle ─────────────────────────────────────────────────
+    sr.querySelector('#btn-export')?.addEventListener('click', () => {
+      this.#editingExport    = !this.#editingExport;
+      this.#editingMeta      = false;
+      this.#exportMsg        = null;
+      this.#changingExportLoc = false;
+      this.#render();
+    });
+
+    // ── Export now ──────────────────────────────────────────────────────────
+    sr.querySelector('#btn-do-export')?.addEventListener('click', async () => {
+      this.#exporting = true;
+      this.#exportMsg = null;
+      this.#render();
+      try {
+        const res  = await fetch(`/api/export/${enc(this.course)}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        this.#exportMsg = { ok: true, text: `Exported to: ${data.path}` };
+      } catch (e) {
+        this.#exportMsg = { ok: false, text: e.message };
+      }
+      this.#exporting = false;
+      this.#render();
+    });
+
+    // ── Change export location ──────────────────────────────────────────────
+    sr.querySelector('#btn-change-loc')?.addEventListener('click', () => {
+      this.#changingExportLoc = true;
+      this.#exportMsg = null;
+      this.#render();
+    });
+
+    // ── New module form ─────────────────────────────────────────────────────
     sr.querySelector('#btn-new')?.addEventListener('click', () => {
       this.#creating = true;
       this.#render();
@@ -258,7 +521,7 @@ class CourseView extends HTMLElement {
       }
     });
 
-    // Click to open (not on drag handle)
+    // ── Click to open module ────────────────────────────────────────────────
     sr.querySelectorAll('.module-card').forEach(el => {
       el.addEventListener('click', (e) => {
         if (e.target.closest('.drag-handle')) return;
@@ -270,7 +533,7 @@ class CourseView extends HTMLElement {
       });
     });
 
-    // Drag-to-reorder
+    // ── Drag-to-reorder ─────────────────────────────────────────────────────
     sr.querySelectorAll('.module-card').forEach(el => {
       el.addEventListener('dragstart', (e) => {
         this.#dragIdx = parseInt(el.dataset.idx);
