@@ -524,10 +524,12 @@ function renderShell(appEl) {
     }
   });
 
-  // Fullscreen → re-scale
-  document.addEventListener('fullscreenchange', () =>
-    requestAnimationFrame(scaleCanvas)
-  );
+  // Fullscreen → re-scale + swap icon
+  document.addEventListener('fullscreenchange', () => {
+    requestAnimationFrame(scaleCanvas);
+    const icon = document.querySelector('#btn-fullscreen i');
+    if (icon) icon.className = document.fullscreenElement ? 'icon-exit-fullscreen' : 'icon-fullscreen';
+  });
 
   // ResizeObserver for slide stage
   state.resizeObs = new ResizeObserver(() => scaleCanvas());

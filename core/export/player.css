@@ -23,15 +23,16 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-.icon-play:before     { content: '0'; }
-.icon-stop:before     { content: '1'; }
-.icon-pause:before    { content: '2'; }
-.icon-fast-fw:before  { content: '3'; }
-.icon-rewind:before   { content: '4'; }
-.icon-download:before { content: '5'; }
-.icon-ok:before       { content: '6'; }
-.icon-menu:before     { content: '7'; }
-.icon-fullscreen:before { content: '8'; }
+.icon-play:before            { content: '0'; }
+.icon-stop:before            { content: '1'; }
+.icon-pause:before           { content: '2'; }
+.icon-fast-fw:before         { content: '3'; }
+.icon-rewind:before          { content: '4'; }
+.icon-download:before        { content: '5'; }
+.icon-ok:before              { content: '6'; }
+.icon-menu:before            { content: '7'; }
+.icon-fullscreen:before      { content: '8'; }
+.icon-exit-fullscreen:before { content: '9'; }
 
 @font-face {
   font-family: 'Open Sans';
