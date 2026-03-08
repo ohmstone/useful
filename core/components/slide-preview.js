@@ -105,14 +105,14 @@ const STYLES = `
 
   /* ── Block: paragraph ── */
   .para        { margin: 0; line-height: 1.55; }
-  .para.big    { font-size: 1.55em; }
+  .para.big    { font-size: 1.4em; }
   .para.small  { font-size: 0.75em; }
   .para.center { text-align: center; }
   .para.right  { text-align: right; }
 
   /* ── Block: heading ── */
-  .h1 { font-size: 2em;   font-weight: 700; line-height: 1.2; margin: 0; }
-  .h2 { font-size: 1.4em; font-weight: 600; line-height: 1.3; margin: 0; }
+  .h1 { font-size: 1.8em;   font-weight: 700; line-height: 1.2; margin: 0; }
+  .h2 { font-size: 1.3em; font-weight: 600; line-height: 1.3; margin: 0; }
   .h1.center, .h2.center { text-align: center; }
   .h1.right,  .h2.right  { text-align: right; }
 
@@ -122,7 +122,7 @@ const STYLES = `
     padding-left: 1.4em;
     line-height: 1.6;
   }
-  ul.big li, ol.big li { font-size: 1.35em; }
+  ul.big li, ol.big li { font-size: 1.25em; }
   ul.small li, ol.small li { font-size: 0.75em; }
   ul.center, ol.center { text-align: center; list-style-position: inside; padding-left: 0; }
 

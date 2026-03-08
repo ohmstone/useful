@@ -410,7 +410,7 @@ function renderShell(appEl) {
               <option value="2">2×</option>
             </select>
             <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen"><i class="icon-fullscreen"></i></button>
-            <button class="ctrl-btn" id="btn-lessons"    title="Lessons"><i class="icon-menu"></i> Lessons</button>
+            <button class="ctrl-btn" id="btn-lessons"    title="Lessons"><i class="icon-menu"></i>&nbsp;Lessons</button>
           </div>
         </div>
         <div id="resume-prompt" hidden>

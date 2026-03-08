@@ -159,18 +159,18 @@ html, body {
   padding: 4% 5%; gap: 0.5em; overflow: hidden;
 }
 .sp-para        { margin: 0; line-height: 1.55; }
-.sp-para.big    { font-size: 1.55em; }
+.sp-para.big    { font-size: 1.4em; }
 .sp-para.small  { font-size: 0.75em; }
 .sp-para.center { text-align: center; }
 .sp-para.right  { text-align: right; }
-.sp-h1 { font-size: 2em;   font-weight: 700; line-height: 1.2; }
-.sp-h2 { font-size: 1.4em; font-weight: 600; line-height: 1.3; }
+.sp-h1 { font-size: 1.8em;   font-weight: 700; line-height: 1.2; }
+.sp-h2 { font-size: 1.3em; font-weight: 600; line-height: 1.3; }
 .sp-h1.center, .sp-h2.center { text-align: center; }
 .sp-h1.right,  .sp-h2.right  { text-align: right; }
 #slide-canvas ul, #slide-canvas ol {
   margin: 0; padding-left: 1.4em; line-height: 1.6;
 }
-#slide-canvas ul.big li, #slide-canvas ol.big li { font-size: 1.35em; }
+#slide-canvas ul.big li, #slide-canvas ol.big li { font-size: 1.25em; }
 #slide-canvas ul.small li, #slide-canvas ol.small li { font-size: 0.75em; }
 #slide-canvas ul.center, #slide-canvas ol.center {
   text-align: center; list-style-position: inside; padding-left: 0;
