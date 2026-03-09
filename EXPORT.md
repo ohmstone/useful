@@ -76,12 +76,18 @@ export. If absent, defaults are derived from the course/module directory names.
   "description": "A short course covering tokenisation, parsing, and evaluation.",
   "thumbnail": "thumbnail.jpg",
   "author": "Jane Smith",
-  "tags": ["programming", "compilers"]
+  "tags": ["programming", "compilers"],
+  "siteUrl": "https://example.com/courses/intro-to-parsing"
 }
 ```
 
 - `thumbnail` is a filename relative to `<projectDir>/_inject/`. If provided, it is copied
-  to `assets/thumbnail.jpg` in the export and used for `og:image`.
+  to `assets/thumbnail.jpg` in the export and used for `og:image` and `twitter:image`.
+- `siteUrl` is the canonical absolute URL where the course root (`index.html`) will be served
+  (e.g. `https://example.com/courses/my-course`). When set, `og:image`, `og:url`, and
+  `twitter:image` are all written as absolute URLs, which is required for social share
+  previews to work on Twitter/X, LinkedIn, Slack, etc. Without it, image tags use relative
+  paths (fine for local use; broken for social scrapers).
 - All fields are optional. The course directory name (slugified) is always the URL slug.
 - The main app gains an "Edit Metadata" panel in `<course-view>` for these fields.
 
@@ -108,7 +114,7 @@ heading (if any) is used as the description.
     manifest.json           # Course metadata + ordered module list + per-module durations
     manifest.webmanifest    # Web App Manifest — enables PWA install / Add to Home Screen
     sw.js                   # Service worker — caches all assets for offline use
-    sw-manifest.json        # Precache list used by sw.js (generated at export time)
+    sw-manifest.json        # Asset list with SHA-256 hashes (debugging / tooling; not loaded at runtime)
     player.css              # Standalone player stylesheet (no inline styles)
     player.js               # Standalone player app (no inline scripts; ES module)
     hls.js                  # Copied verbatim from extra/hls.js
@@ -117,6 +123,7 @@ heading (if any) is used as the description.
       icon.svg              # PWA icon (derived from thumbnail, or default useful icon)
       <any _inject/ files>  # Images and data files referenced in slides
     modules/
+      index.html            # Meta-refresh redirect → ../index.html (prevents bare /modules/ 404)
       <module-slug>/
         index.html          # Module page — full standalone HTML + readable content
         slides.json         # Parsed slide AST (used by player.js at runtime; type=slides)
@@ -152,8 +159,9 @@ All filenames are predictable and static. No hashes or nonces required. No serve
 }
 ```
 
-`duration` is the total audio track duration in seconds (sum of slide durations if no audio,
-or the length of the assembled HLS track).
+`duration` is always the total slide duration in seconds (sum of all per-slide `duration`
+fields from the slide language). Slides are authoritative for runtime; the HLS audio export
+is capped to this value so it never runs past the last slide.
 
 `type` identifies the module renderer. Currently only `"slides"` is implemented. Future types
 (e.g. `"quiz"`, `"article"`) are added without changing the outer manifest structure — the player
@@ -180,7 +188,7 @@ For each module, ffmpeg assembles the clips from `track.json` into a single HLS 
      " \
      -map "[out]" \
      -t <total_duration> \
-     -c:a aac -b:a 128k -ar 44100 \
+     -c:a aac -b:a 64k -ar 22050 \
      -hls_time 4 \
      -hls_playlist_type vod \
      -hls_segment_filename "modules/<slug>/audio-%03d.ts" \
@@ -241,8 +249,13 @@ The `blocks` array is the full slide AST as returned by `parseSlides()`, seriali
   <meta name="description" content="A short course covering…">
   <meta property="og:title" content="Introduction to Parsing">
   <meta property="og:description" content="A short course covering…">
-  <meta property="og:image" content="assets/thumbnail.jpg">
+  <meta property="og:image" content="https://example.com/courses/intro-to-parsing/assets/thumbnail.jpg">
   <meta property="og:type" content="website">
+  <meta property="og:url" content="https://example.com/courses/intro-to-parsing/">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Introduction to Parsing">
+  <meta name="twitter:description" content="A short course covering…">
+  <meta name="twitter:image" content="https://example.com/courses/intro-to-parsing/assets/thumbnail.jpg">
   <link rel="stylesheet" href="player.css">
   <script type="application/ld+json">
   {
@@ -260,7 +273,6 @@ The `blocks` array is the full slide AST as returned by `parseSlides()`, seriali
     <nav id="module-list"><!-- populated by player.js --></nav>
     <section id="player"><!-- populated by player.js --></section>
   </main>
-  <script src="hls.js"></script>
   <script type="module" src="player.js"></script>
 </body>
 </html>
@@ -302,7 +314,6 @@ semantic HTML inside a `<article>` so it is fully indexable without JS:
       …
     </article>
   </main>
-  <script src="../../hls.js"></script>
   <script type="module" src="../../player.js"></script>
 </body>
 </html>
@@ -327,8 +338,8 @@ Udemy / Coursera structure):
 │   Same renderer as the authoring tool    │  ▶  2. What is…      │
 │                                          │     3. Three phases  │
 │  ────────────────────────────────────    │     4. Summary       │
-│  [◀◀] [▶/⏸] [▶▶]  0:00 ───●──── 2:24  │                      │
-│  [⛶ Fullscreen]  [⟨⟩ Slides 1/5]       │  Progress: 25%       │
+│  [◀◀] [▶/⏸] [▶▶]  0:00 ───●──── 2:24    │                      │
+│  [⛶ Fullscreen]  [⟨⟩ Slides 1/5]        │  Progress: 25%       │
 └──────────────────────────────────────────┴──────────────────────┘
 ```
 
@@ -338,10 +349,10 @@ Mobile layout (< 768 px):
 ┌────────────────────────────┐
 │  SLIDE RENDERER (16:9)     │
 │                            │
-│  [◀◀] [▶/⏸] [▶▶] [⛶]    │
-│  0:00 ────●──────── 2:24  │
+│  [◀◀] [▶/⏸] [▶▶] [⛶]      │
+│  0:00 ────●──────── 2:24   │
 ├────────────────────────────┤
-│  [☰ Lessons]  2. What is… │  ← tab bar / drawer toggle
+│  [☰ Modules]  2. What is…  │  ← tab bar / drawer toggle
 ├────────────────────────────┤
 │  (module list or current   │
 │   module description)      │
@@ -373,7 +384,7 @@ Mobile layout (< 768 px):
     - In progress: thin progress bar (width = `% of duration watched`)
     - Completed: checkmark
 - Clicking a module navigates to it (in-page, no full reload).
-- On mobile, the module list is accessible via a drawer toggled by a "Lessons" button.
+- On mobile, the module list is accessible via a drawer toggled by a "Modules" button.
 
 ### Progress tracking (localStorage)
 
@@ -504,40 +515,66 @@ Generated at export time alongside `manifest.json`:
 ### Service worker (`sw.js`)
 
 `sw.js` is generated at export time (not a static template) because it embeds the cache
-version (the export timestamp) as a constant. The generated file is a standard JS module
-registered with `navigator.serviceWorker.register` in `player.js`.
+version (the export timestamp) and a SHA-256 hash map of all assets as constants. The
+generated file is registered with `navigator.serviceWorker.register` in `player.js`.
 
-Strategy: **precache everything on install**.
+Strategy: **precache everything on install, with hash-based reuse and sequential segments**.
 
 ```javascript
 // Generated sw.js (simplified)
-const CACHE = 'useful-course-<timestamp>';
-const ASSETS = [/* all entries from sw-manifest.json */];
+const CACHE    = 'useful-course-<timestamp>';
+const HASHES   = { './index.html': 'abc…', './modules/slug/audio-000.ts': 'def…', … };
+const STATIC   = [/* non-.ts assets — fetched in parallel */];
+const SEGMENTS = [/* .ts HLS segments — fetched sequentially */];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
-  self.skipWaiting();
+  e.waitUntil((async () => {
+    const newCache = await caches.open(CACHE);
+
+    // Find any previous cache to reuse files whose hash hasn't changed
+    const oldKey = (await caches.keys()).find(k => k !== CACHE && k.startsWith('useful-course-'));
+    const oldHashes = oldKey ? await … : {};
+    const oldCache  = oldKey ? await caches.open(oldKey) : null;
+
+    async function cacheOne(url) {
+      const hash = HASHES[url];
+      if (hash && oldCache && oldHashes[url] === hash) {
+        const hit = await oldCache.match(url);
+        if (hit) { await newCache.put(url, hit); return; }  // reuse, no network request
+      }
+      const r = await fetch(new Request(url));  // plain GET → Caddy returns 200, not 206
+      if (r.status === 200) await newCache.put(url, r);
+    }
+
+    await Promise.all(STATIC.map(cacheOne));          // static assets in parallel
+    for (const url of SEGMENTS) await cacheOne(url);  // HLS segments sequentially
+
+    // Persist hash snapshot for the next install comparison
+    await newCache.put('__hashes', new Response(JSON.stringify(HASHES), …));
+    self.skipWaiting();
+  })());
 });
 
-self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    )
-  );
-  self.clients.claim();
-});
-
+self.addEventListener('activate', e => { /* delete old caches */ });
 self.addEventListener('fetch', e => {
-  e.respondWith(
-    caches.match(e.request).then(r => r ?? fetch(e.request))
-  );
+  e.respondWith(caches.match(e.request).then(r => r ?? fetch(e.request)));
 });
 ```
 
-The asset list is baked into `sw.js` directly (not fetched from `sw-manifest.json` at
-runtime) to avoid a network round-trip on install. `sw-manifest.json` is still generated
-as a standalone file for debugging and potential tooling use.
+Key properties:
+- **Cache key = export timestamp**: any re-export triggers a new SW install, which in turn
+  triggers a full cache comparison and selective refresh.
+- **Hash-based reuse**: files whose SHA-256 hash hasn't changed are copied from the old cache
+  rather than re-fetched. Only changed, added, or removed files hit the network.
+- **Sequential `.ts` download**: HLS audio segments are fetched one at a time during install
+  to avoid flooding the server. Static assets (JS, CSS, HTML, JSON, images) are fetched
+  in parallel since they are few and small.
+- **Plain GET for segments**: `fetch(new Request(url))` strips any Range header, ensuring
+  the server returns a full 200 response that `cache.put()` can accept (206 Partial Content
+  is rejected by the Cache API).
+
+The asset list and hash map are baked into `sw.js` directly (not fetched from
+`sw-manifest.json` at runtime) to avoid a network round-trip on install.
 
 ### Install prompt
 
@@ -545,12 +582,6 @@ as a standalone file for debugging and potential tooling use.
 "Install Course" button in the player controls bar. Clicking it triggers the browser's
 native install prompt. The button is hidden if the app is already running in standalone mode
 (`window.matchMedia('(display-mode: standalone)').matches`).
-
-### Offline indicator
-
-A small banner is shown when `navigator.onLine === false` or the `offline` event fires,
-informing the user they are in offline mode. Playback continues unaffected (all assets
-are cached).
 
 ---
 
@@ -562,7 +593,7 @@ The player uses a single CSS file (`player.css`) with no inline styles. Layout b
 |------------|--------|
 | ≥ 1024 px | Two-column: player (flex 1) + sidebar (320 px fixed) |
 | 768–1023 px | Two-column: player (flex 1) + sidebar (260 px fixed) |
-| < 768 px | Single-column stacked: player full width, lessons drawer below |
+| < 768 px | Single-column stacked: player full width, modules drawer below |
 
 ### Mobile-specific behaviour
 
@@ -570,7 +601,7 @@ The player uses a single CSS file (`player.css`) with no inline styles. Layout b
   mechanism as the authoring tool).
 - All tap targets (play/pause, skip, progress bar, module list items) are at least 44×44 px.
 - The progress bar has an enlarged touch hit area via `padding` + negative `margin`.
-- The lessons drawer is toggled by a "Lessons ☰" button in the control bar. It slides up
+- The modules drawer is toggled by a "Modules ☰" button in the control bar. It slides up
   from the bottom as an overlay panel. Tapping outside the drawer closes it.
 - Fullscreen on mobile uses the standard `requestFullscreen()` API; on iOS Safari (which
   does not support `requestFullscreen` on arbitrary elements), the player uses
@@ -718,55 +749,26 @@ Progress is reported per-module via the status endpoint (polled by the frontend)
 ## SEO and social sharing
 
 - Each module page has: `<title>`, `<meta name="description">`, `og:title`, `og:description`,
-  `og:image`, `og:type = "article"`, `og:site_name`.
-- Course landing page has: `og:type = "website"`, full JSON-LD `Course` schema.
+  `og:image`, `og:type = "article"`, `og:url`, `twitter:card`, `twitter:title`,
+  `twitter:description`, `twitter:image`.
+- Course landing page has: `og:type = "website"`, `og:url`, `twitter:card`, `twitter:title`,
+  `twitter:description`, `twitter:image`, full JSON-LD `Course` schema.
 - Module pages have: JSON-LD `CourseSection` schema with `position`, `name`, `description`.
 - `<link rel="canonical">` on module pages points back to the course landing with a hash
   (`../../index.html#module=<slug>`) so link equity consolidates.
 - All slide text content is present in the DOM as readable HTML (the `<article>` fallback),
   not generated by JS, so crawlers index the full course content without executing JS.
 
----
+### Social share image requirements
 
-## Implementation phases
+For previews to appear on Twitter/X, LinkedIn, Slack, and similar platforms:
 
-### Phase 1: Foundation
-- Add `exportDir` to config + API (`GET/POST /api/export/config`)
-- Add ffmpeg check at startup
-- Add `_meta.json` support (read/write API + "Edit Metadata" panel in `<course-view>`)
-- Add `type` field support in module `_meta.json` (default `"slides"`)
-
-### Phase 2: Export engine (server)
-- `POST /api/export/:course` — full export pipeline
-- `GET /api/export/:course/status` — progress polling (per-module state)
-- HLS audio assembly via ffmpeg
-- `slides.json` generation (AST + `audioStart` offsets)
-- Module HTML generation (semantic fallback; type-aware)
-- Course landing `index.html` + `manifest.json` generation
-- `manifest.webmanifest` generation
-- `sw.js` generation (cache version = export timestamp, all assets baked in)
-- `sw-manifest.json` generation (precache asset list)
-- Default icon (`core/export/icon.svg`) copied to `assets/`
-
-### Phase 3: Player
-- `player.css` — responsive two-column layout, mobile drawer, touch targets
-- `player.js` — slide renderer (ported from `slide-preview.js`), HLS playback
-- Module type dispatch (renders based on manifest `type`)
-- Seamless module transitions (in-page fetch + `history.pushState`)
-- Fullscreen on `player-shell` (sidebar accessible as overlay in fullscreen)
-- Service worker registration + "Install Course" button
-- Offline indicator
-- LocalStorage progress tracking (position + completion, per-module)
-- "Resume from…" prompt on module load
-- Mobile lessons drawer
-
-### Phase 4: Archive
-- `GET /api/export/:course/download` — ZIP stream via `zip` CLI
-- "Download Archive" button in export completion UI
-
-### Phase 5: Import (future)
-- `POST /api/import` — accept ZIP upload, extract to exportDir, detect manifest
-
-### Phase 6: Additional module types (future)
-- `quiz` type: `quiz.json` schema, question renderer in `player.js`, export HTML generation
-- `article` type: long-form formatted text
+- **`siteUrl` must be set** in `_meta.json` — social scrapers require absolute URLs for
+  `og:image` and `twitter:image`. Relative paths will not resolve.
+- **File format**: JPEG or PNG (SVG and WebP have limited scraper support). The thumbnail
+  filename in `_meta.json` should be a `.jpg` or `.png` file stored in `<projectDir>/_inject/`.
+- **Minimum size**: 600 × 314 px. Recommended: **1200 × 628 px** (2:1 ratio) for
+  `summary_large_image` cards. Maximum file size: 5 MB.
+- **`twitter:card`** is set to `summary_large_image` on all pages. If no thumbnail is
+  provided, the card still renders but without an image preview.
+- No conversion step is required — the file is copied as-is from `_inject/` to `assets/`.

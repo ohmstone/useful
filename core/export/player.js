@@ -282,6 +282,7 @@ const state = {
   timerRaf:      null,  // RAF id for no-audio timer mode
   timerBase:     0,     // performance.now() reference when timer-mode play started
   timerOffset:   0,     // accumulated seconds before current play session
+  audioRaf:      null,  // RAF id for smooth progress updates in audio mode
   _lastSavedSec: -1,
   _audioEnded:   false, // true when HLS ended early and we switched to timer mode
 };
@@ -324,6 +325,25 @@ async function init() {
     const swUrl   = `${state.courseRoot}/sw.js`;
     const swScope = state.courseRoot + '/';
     navigator.serviceWorker.register(swUrl, { scope: swScope }).catch(() => {});
+
+    // Listen for background caching progress from the SW activate event
+    navigator.serviceWorker.addEventListener('message', e => {
+      const el   = document.getElementById('sw-status');
+      const txt  = document.getElementById('sw-status-text');
+      const fill = document.getElementById('sw-status-bar-fill');
+      if (!el) return;
+      if (e.data?.type === 'sw-caching') {
+        el.hidden = false;
+        const pct = e.data.total > 0 ? Math.round((e.data.done / e.data.total) * 100) : 0;
+        if (txt)  txt.textContent = `Fetching for offline\u2026 ${pct}%`;
+        if (fill) fill.style.width = `${pct}%`;
+      } else if (e.data?.type === 'sw-ready') {
+        el.hidden = false;
+        if (txt)  txt.textContent = 'Ready for offline';
+        if (fill) fill.style.width = '100%';
+        setTimeout(() => { el.hidden = true; }, 3000);
+      }
+    });
   }
 
   // PWA install prompt
@@ -332,12 +352,6 @@ async function init() {
     state.installPrompt = e;
     document.getElementById('btn-install')?.removeAttribute('hidden');
   });
-
-  // Offline banner
-  const updateOnline = () =>
-    document.getElementById('offline-banner')?.toggleAttribute('hidden', navigator.onLine);
-  window.addEventListener('online',  updateOnline);
-  window.addEventListener('offline', updateOnline);
 
   // Fetch manifest
   try {
@@ -376,7 +390,6 @@ function _deriveCourseSlug() {
 
 function renderShell(appEl) {
   appEl.innerHTML = `
-    <div id="offline-banner" hidden>Offline — playing from cache.</div>
     <div id="player-shell">
       <div id="player-area">
         <div id="slide-stage">
@@ -410,7 +423,7 @@ function renderShell(appEl) {
               <option value="2">2×</option>
             </select>
             <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen"><i class="icon-fullscreen"></i></button>
-            <button class="ctrl-btn" id="btn-lessons"    title="Lessons"><i class="icon-menu"></i>&nbsp;Lessons</button>
+            <button class="ctrl-btn" id="btn-modules"    title="Modules"><i class="icon-menu"></i>&nbsp;Modules</button>
           </div>
         </div>
         <div id="resume-prompt" hidden>
@@ -428,6 +441,10 @@ function renderShell(appEl) {
         <div id="course-progress-wrap">
           <div id="course-progress-label"></div>
         </div>
+        <div id="sw-status" hidden>
+          <span id="sw-status-text"></span>
+          <div id="sw-status-bar-wrap"><div id="sw-status-bar-fill"></div></div>
+        </div>
       </nav>
     </div>`;
 
@@ -443,7 +460,7 @@ function renderShell(appEl) {
   document.getElementById('btn-skip-back').addEventListener('click', () => seek(currentTime() - 10));
   document.getElementById('btn-skip-fwd').addEventListener('click',  () => seek(currentTime() + 10));
   document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
-  document.getElementById('btn-lessons').addEventListener('click',    toggleSidebar);
+  document.getElementById('btn-modules').addEventListener('click',    toggleSidebar);
   document.getElementById('btn-install').addEventListener('click',    doInstall);
   document.getElementById('speed-select').addEventListener('change', e => {
     const rate = parseFloat(e.target.value) || 1;
@@ -476,9 +493,16 @@ function renderShell(appEl) {
 
   // Audio events
   state.audio.addEventListener('timeupdate', onTimeUpdate);
-  state.audio.addEventListener('play',  () => { state.playing = true;  _updatePlayBtn(); });
+  state.audio.addEventListener('play',  () => {
+    state.playing = true;
+    _updatePlayBtn();
+    // Start smooth RAF-driven progress updates for audio mode
+    if (state.audioRaf) cancelAnimationFrame(state.audioRaf);
+    state.audioRaf = requestAnimationFrame(_audioRafTick);
+  });
   state.audio.addEventListener('pause', () => {
     state.playing = false;
+    if (state.audioRaf) { cancelAnimationFrame(state.audioRaf); state.audioRaf = null; }
     // If audio ended naturally and slides still have content, the 'ended' event (which fires
     // after 'pause') will transition to timer mode. Suppress controls restore to avoid a flash.
     const audioTime = state.audio.currentTime || 0;
@@ -492,6 +516,7 @@ function renderShell(appEl) {
     // If slides still have time remaining, continue in timer mode rather than ending the module.
     // Note: the browser dispatches 'pause' before 'ended' on natural end, so state.playing is
     // already false here — do NOT gate on state.playing.
+    if (state.audioRaf) { cancelAnimationFrame(state.audioRaf); state.audioRaf = null; }
     const slidesTotalDur = state.slidesData?.totalDuration || 0;
     const audioTime      = state.audio.currentTime || 0;
     if (audioTime < slidesTotalDur - 0.1) {
@@ -519,15 +544,17 @@ function renderShell(appEl) {
   document.getElementById('player-shell').addEventListener('click', e => {
     const sidebar = document.getElementById('module-sidebar');
     if (sidebar?.classList.contains('is-open') && !sidebar.contains(e.target) &&
-        e.target.id !== 'btn-lessons') {
+        e.target.id !== 'btn-modules') {
       closeSidebar();
     }
   });
 
-  // Fullscreen → re-scale
-  document.addEventListener('fullscreenchange', () =>
-    requestAnimationFrame(scaleCanvas)
-  );
+  // Fullscreen → re-scale + swap icon
+  document.addEventListener('fullscreenchange', () => {
+    requestAnimationFrame(scaleCanvas);
+    const icon = document.querySelector('#btn-fullscreen i');
+    if (icon) icon.className = document.fullscreenElement ? 'icon-exit-fullscreen' : 'icon-fullscreen';
+  });
 
   // ResizeObserver for slide stage
   state.resizeObs = new ResizeObserver(() => scaleCanvas());
@@ -620,8 +647,11 @@ function loadHlsIfNeeded() {
 // ── Module loading ─────────────────────────────────────────────────────────────
 
 async function loadModule(slug, pushState, autoPlay = false) {
-  // Save and stop current playback
+  // Save and stop current playback. Null out slidesData before pausing so the
+  // async 'pause' event (queued by audio.pause()) doesn't overwrite the new
+  // module's saved progress with position 0 via saveCurrentProgress().
   saveCurrentProgress();
+  state.slidesData = null;
   _stopPlayback();
 
   state.moduleSlug  = slug;
@@ -800,10 +830,18 @@ function _timerTick() {
   state.timerRaf = requestAnimationFrame(_timerTick);
 }
 
+// RAF loop for smooth progress bar updates in audio mode
+function _audioRafTick() {
+  if (!state.playing || !state.slidesData?.audio || state._audioEnded) return;
+  _applyTime(state.audio.currentTime || 0);
+  state.audioRaf = requestAnimationFrame(_audioRafTick);
+}
+
 // ── Time update (shared between audio mode and timer mode) ────────────────────
 
 function onTimeUpdate() {
-  _applyTime(state.audio.currentTime || 0);
+  // Only used for non-RAF-driven updates (e.g. seeking while paused)
+  if (!state.playing) _applyTime(state.audio.currentTime || 0);
 }
 
 function _applyTime(t) {
@@ -876,6 +914,7 @@ function onModuleEnded() {
 
 function _stopPlayback() {
   if (state.timerRaf) { cancelAnimationFrame(state.timerRaf); state.timerRaf = null; }
+  if (state.audioRaf) { cancelAnimationFrame(state.audioRaf); state.audioRaf = null; }
   state.timerOffset  = 0;
   state._audioEnded  = false;
   if (state.hls) { state.hls.destroy(); state.hls = null; }
@@ -896,7 +935,7 @@ function toggleFullscreen() {
   }
 }
 
-// ── Sidebar / lessons drawer ──────────────────────────────────────────────────
+// ── Sidebar / modules drawer ──────────────────────────────────────────────────
 
 function toggleSidebar() {
   document.getElementById('module-sidebar')?.classList.toggle('is-open');
@@ -956,6 +995,10 @@ async function doInstall() {
     state.installPrompt = null;
     const btn = document.getElementById('btn-install');
     if (btn) btn.hidden = true;
+    // Ask the SW to download all HLS segments for offline use
+    const sw = navigator.serviceWorker.controller
+      ?? (await navigator.serviceWorker.ready).active;
+    sw?.postMessage({ type: 'precache-segments' });
   }
 }
 

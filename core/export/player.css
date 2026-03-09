@@ -23,15 +23,16 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-.icon-play:before     { content: '0'; }
-.icon-stop:before     { content: '1'; }
-.icon-pause:before    { content: '2'; }
-.icon-fast-fw:before  { content: '3'; }
-.icon-rewind:before   { content: '4'; }
-.icon-download:before { content: '5'; }
-.icon-ok:before       { content: '6'; }
-.icon-menu:before     { content: '7'; }
-.icon-fullscreen:before { content: '8'; }
+.icon-play:before            { content: '0'; }
+.icon-stop:before            { content: '1'; }
+.icon-pause:before           { content: '2'; }
+.icon-fast-fw:before         { content: '3'; }
+.icon-rewind:before          { content: '4'; }
+.icon-download:before        { content: '5'; }
+.icon-ok:before              { content: '6'; }
+.icon-menu:before            { content: '7'; }
+.icon-fullscreen:before      { content: '8'; }
+.icon-exit-fullscreen:before { content: '9'; }
 
 @font-face {
   font-family: 'Open Sans';
@@ -440,17 +441,31 @@ html, body {
   font-size: 12px; color: var(--text-muted);
 }
 
-/* ── Offline banner ───────────────────────────────────────────────────────── */
+/* ── Offline caching progress ─────────────────────────────────────────────── */
 
-#offline-banner {
-  background: #3a2a10;
-  border-bottom: 1px solid #5a4a20;
-  color: #d4a830;
-  padding: 6px 16px;
-  font-size: 13px;
-  text-align: center;
+#sw-status {
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
-#offline-banner[hidden] { display: none; }
+#sw-status[hidden] { display: none; }
+#sw-status-text { font-size: 11px; color: var(--text-muted); }
+#sw-status-bar-wrap {
+  height: 3px;
+  background: var(--bg-elevated);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#sw-status-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
 
 /* ── Fullscreen: sidebar accessible as hover overlay ─────────────────────── */
 
@@ -467,7 +482,7 @@ html, body {
   transform: translateX(0);
 }
 
-/* ── Mobile (< 768px): single-column + lessons drawer ────────────────────── */
+/* ── Mobile (< 768px): single-column + modules drawer ────────────────────── */
 
 @media (max-width: 767px) {
   html, body { overflow: hidden; }
@@ -500,7 +515,7 @@ html, body {
     z-index: -1;
   }
 
-  #btn-lessons { display: flex; }
+  #btn-modules { display: flex; }
 
   #controls { padding: 0 8px; gap: 4px; }
   .ctrl-btn  { padding: 4px 8px; font-size: 12px; }
@@ -514,7 +529,7 @@ html, body {
 }
 
 @media (min-width: 768px) {
-  #btn-lessons { display: none; }
+  #btn-modules { display: none; }
 }
 
 /* ── Medium screens (768–1023px): narrower sidebar ───────────────────────── */
