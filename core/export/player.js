@@ -282,6 +282,7 @@ const state = {
   timerRaf:      null,  // RAF id for no-audio timer mode
   timerBase:     0,     // performance.now() reference when timer-mode play started
   timerOffset:   0,     // accumulated seconds before current play session
+  audioRaf:      null,  // RAF id for smooth progress updates in audio mode
   _lastSavedSec: -1,
   _audioEnded:   false, // true when HLS ended early and we switched to timer mode
 };
@@ -492,9 +493,16 @@ function renderShell(appEl) {
 
   // Audio events
   state.audio.addEventListener('timeupdate', onTimeUpdate);
-  state.audio.addEventListener('play',  () => { state.playing = true;  _updatePlayBtn(); });
+  state.audio.addEventListener('play',  () => {
+    state.playing = true;
+    _updatePlayBtn();
+    // Start smooth RAF-driven progress updates for audio mode
+    if (state.audioRaf) cancelAnimationFrame(state.audioRaf);
+    state.audioRaf = requestAnimationFrame(_audioRafTick);
+  });
   state.audio.addEventListener('pause', () => {
     state.playing = false;
+    if (state.audioRaf) { cancelAnimationFrame(state.audioRaf); state.audioRaf = null; }
     // If audio ended naturally and slides still have content, the 'ended' event (which fires
     // after 'pause') will transition to timer mode. Suppress controls restore to avoid a flash.
     const audioTime = state.audio.currentTime || 0;
@@ -508,6 +516,7 @@ function renderShell(appEl) {
     // If slides still have time remaining, continue in timer mode rather than ending the module.
     // Note: the browser dispatches 'pause' before 'ended' on natural end, so state.playing is
     // already false here — do NOT gate on state.playing.
+    if (state.audioRaf) { cancelAnimationFrame(state.audioRaf); state.audioRaf = null; }
     const slidesTotalDur = state.slidesData?.totalDuration || 0;
     const audioTime      = state.audio.currentTime || 0;
     if (audioTime < slidesTotalDur - 0.1) {
@@ -821,10 +830,18 @@ function _timerTick() {
   state.timerRaf = requestAnimationFrame(_timerTick);
 }
 
+// RAF loop for smooth progress bar updates in audio mode
+function _audioRafTick() {
+  if (!state.playing || !state.slidesData?.audio || state._audioEnded) return;
+  _applyTime(state.audio.currentTime || 0);
+  state.audioRaf = requestAnimationFrame(_audioRafTick);
+}
+
 // ── Time update (shared between audio mode and timer mode) ────────────────────
 
 function onTimeUpdate() {
-  _applyTime(state.audio.currentTime || 0);
+  // Only used for non-RAF-driven updates (e.g. seeking while paused)
+  if (!state.playing) _applyTime(state.audio.currentTime || 0);
 }
 
 function _applyTime(t) {
@@ -897,6 +914,7 @@ function onModuleEnded() {
 
 function _stopPlayback() {
   if (state.timerRaf) { cancelAnimationFrame(state.timerRaf); state.timerRaf = null; }
+  if (state.audioRaf) { cancelAnimationFrame(state.audioRaf); state.audioRaf = null; }
   state.timerOffset  = 0;
   state._audioEnded  = false;
   if (state.hls) { state.hls.destroy(); state.hls = null; }
