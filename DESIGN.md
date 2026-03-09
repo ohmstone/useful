@@ -348,7 +348,7 @@ See [EXPORT.md](EXPORT.md) for the full specification. Summary:
 - Course landing `index.html` + `manifest.json` + shared `player.js` / `player.css` / `hls.js`.
 - **PWA**: `manifest.webmanifest` + generated `sw.js` (service worker) enable offline use and
   "Add to Home Screen" / installability; install prompt shown in player UI.
-- **Responsive**: two-column desktop layout; single-column with lessons drawer on mobile (< 768 px).
+- **Responsive**: two-column desktop layout; single-column with modules drawer on mobile (< 768 px).
 - **Progress tracking**: `localStorage` stores `position` (seconds) + `completed` per module;
   "Resume from…" prompt on reload; module list shows progress bar or checkmark.
 - **Module type extensibility**: each module has a `type` field (`"slides"` is the only current

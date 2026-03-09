@@ -335,6 +335,13 @@ class CourseView extends HTMLElement {
             <span class="field-hint">Filename in your project's Files (_inject/) folder</span>
           </div>
 
+          <div class="field">
+            <label for="meta-siteurl">Site URL</label>
+            <input class="input" id="meta-siteurl" type="url"
+              value="${esc(m.siteUrl ?? '')}" placeholder="https://example.com/courses/my-course" />
+            <span class="field-hint">Where this course will be hosted — required for social share previews</span>
+          </div>
+
           <div class="form-row">
             <button class="btn btn-primary" id="btn-meta-save">Save</button>
             ${this.#metaMsg
@@ -440,6 +447,7 @@ class CourseView extends HTMLElement {
           description: sr.querySelector('#meta-desc').value.trim()    || undefined,
           author:      sr.querySelector('#meta-author').value.trim()  || undefined,
           thumbnail:   sr.querySelector('#meta-thumb').value.trim()   || undefined,
+          siteUrl:     sr.querySelector('#meta-siteurl').value.trim() || undefined,
           tags:        tags.length ? tags : undefined,
         };
         // strip undefined fields

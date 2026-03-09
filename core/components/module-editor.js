@@ -283,12 +283,45 @@ const STYLES = `
 
   /* Loading */
   .loading { font-size: 13px; color: var(--text-muted); padding: 40px; text-align: center; }
+
+  /* ── Module info modal form ── */
+  .info-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
+  .info-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+  .info-input, .info-textarea, .info-select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--font);
+    padding: 7px 10px;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .info-input:focus, .info-textarea:focus, .info-select:focus { border-color: var(--accent); }
+  .info-textarea { min-height: 72px; resize: vertical; }
+  .info-hint { font-size: 11px; color: var(--text-dim); }
+  .info-row { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+  .info-save {
+    background: var(--accent-deep); border: 1px solid var(--accent-deep);
+    border-radius: var(--radius); color: #fff;
+    font-size: 12px; font-family: var(--font);
+    padding: 6px 16px; cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .info-save:hover { background: var(--accent); border-color: var(--accent); }
+  .info-save:disabled { opacity: 0.5; cursor: default; }
+  .info-ok    { font-size: 12px; color: #4caf50; }
+  .info-error { font-size: 12px; color: var(--danger); }
 `;
 
 class ModuleEditor extends HTMLElement {
   static observedAttributes = ['course', 'module'];
 
   #slides     = '';
+  #meta       = {};
   #loading    = true;
   #saveStatus = '';
   #saveTimer  = null;
@@ -316,9 +349,13 @@ class ModuleEditor extends HTMLElement {
     this.#loading = true;
     this.#render();
     try {
-      const res    = await fetch(`/api/slides/${enc(this.course)}/${enc(this.module)}`);
-      this.#slides = await res.text();
-    } catch { this.#slides = ''; }
+      const [slidesRes, metaRes] = await Promise.all([
+        fetch(`/api/slides/${enc(this.course)}/${enc(this.module)}`),
+        fetch(`/api/meta/${enc(this.course)}/${enc(this.module)}`),
+      ]);
+      this.#slides = await slidesRes.text();
+      this.#meta   = await metaRes.json().catch(() => ({}));
+    } catch { this.#slides = ''; this.#meta = {}; }
     this.#loading = false;
     this.#render();
   }
@@ -452,6 +489,7 @@ class ModuleEditor extends HTMLElement {
         <div class="nav-main">
           <button class="back-btn" id="btn-back">← Back</button>
           <span class="save-status" id="save-status">${esc(this.#saveStatus)}</span>
+          <button class="files-btn" id="btn-info">✎ Info</button>
           <button class="files-btn" id="btn-files">Files</button>
           <button class="syntax-btn" id="btn-syntax">? Syntax</button>
           <button class="play-btn" id="btn-play">▶ Play</button>
@@ -539,12 +577,84 @@ class ModuleEditor extends HTMLElement {
       tabCode.classList.remove('active');
     });
 
+    // Info modal
+    sr.querySelector('#btn-info').addEventListener('click', () => this.#showInfoModal());
+
     // Files modal
     sr.querySelector('#btn-files').addEventListener('click', () => this.#showFilesModal());
 
     // Syntax reference modal
     sr.querySelector('#btn-syntax').addEventListener('click', () => this.#showSyntaxModal());
   }
+  #showInfoModal() {
+    const sr = this.shadowRoot;
+    if (sr.querySelector('#info-modal-backdrop')) return;
+
+    const m = this.#meta;
+    const backdrop = document.createElement('div');
+    backdrop.id = 'info-modal-backdrop';
+    backdrop.className = 'modal-backdrop';
+
+    backdrop.innerHTML = `
+      <div class="modal">
+        <button class="modal-close" id="info-close">&times;</button>
+        <h2>Module Info</h2>
+        <div class="info-field">
+          <label class="info-label" for="info-title">Title</label>
+          <input class="info-input" id="info-title" type="text"
+            value="${esc(m.title ?? '')}" placeholder="${esc(this.module)}" />
+        </div>
+        <div class="info-field">
+          <label class="info-label" for="info-desc">Description</label>
+          <textarea class="info-textarea" id="info-desc"
+            placeholder="Brief description for SEO and social sharing">${esc(m.description ?? '')}</textarea>
+        </div>
+        <div class="info-field">
+          <label class="info-label" for="info-type">Type</label>
+          <select class="info-select" id="info-type">
+            <option value="slides" ${(m.type ?? 'slides') === 'slides' ? 'selected' : ''}>slides</option>
+            <option value="quiz"   ${m.type === 'quiz'    ? 'selected' : ''}>quiz</option>
+            <option value="article" ${m.type === 'article' ? 'selected' : ''}>article</option>
+          </select>
+          <span class="info-hint">Controls the player renderer used in the export</span>
+        </div>
+        <div class="info-row">
+          <button class="info-save" id="info-save">Save</button>
+          <span id="info-msg"></span>
+        </div>
+      </div>`;
+
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) backdrop.remove(); });
+    backdrop.querySelector('#info-close').addEventListener('click', () => backdrop.remove());
+
+    backdrop.querySelector('#info-save').addEventListener('click', async () => {
+      const btn = backdrop.querySelector('#info-save');
+      const msg = backdrop.querySelector('#info-msg');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const data = {
+          title:       backdrop.querySelector('#info-title').value.trim() || undefined,
+          description: backdrop.querySelector('#info-desc').value.trim()  || undefined,
+          type:        backdrop.querySelector('#info-type').value         || undefined,
+        };
+        Object.keys(data).forEach(k => data[k] === undefined && delete data[k]);
+        const res = await fetch(`/api/meta/${enc(this.course)}/${enc(this.module)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+        if (!res.ok) throw new Error('Save failed');
+        this.#meta = data;
+        msg.className = 'info-ok'; msg.textContent = 'Saved';
+      } catch (e) {
+        msg.className = 'info-error'; msg.textContent = e.message;
+      }
+      btn.disabled = false; btn.textContent = 'Save';
+    });
+
+    sr.appendChild(backdrop);
+    backdrop.querySelector('#info-title').focus();
+  }
+
   async #showFilesModal() {
     const sr = this.shadowRoot;
     if (sr.querySelector('#files-modal-backdrop')) return;

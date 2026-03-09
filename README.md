@@ -15,6 +15,21 @@ To run this on your machine you will need:
 - [Denolang](https://deno.com/)
 - [FFmpeg](https://ffmpeg.org/)
 
+## Setup
+
+- Install the requirements
+- Open the project in a terminal
+- Clone with submodules
+```bash
+git clone --recurse-submodules <repository-url>
+```
+- Run the app
+```bash
+deno task serve
+```
+- Go to the URL it displays in the terminal
+
+
 ### Recommended
 
 For serving exported courses in production, it is recommended to use:
@@ -43,12 +58,15 @@ For serving exported courses in production, it is recommended to use:
 - [x] Voiceover and slide (and animation) alignment tool
 - [x] Tools for turning structured content into slides
 - [x] Process for publishing content as website
-- [ ] Process for converting course into videos
 - [ ] Documentation on how to use (preferably created with _useful_)
-- [ ] Tools for creating optional interactive quizes
+- [ ] Tools for creating optional interactive quizes + more plugins
+- [ ] Process for converting course into videos
+- [ ] Creating voices for cloning, cleaning input/output audio
 - [ ] Rich text editor for fleshing out initial draft course
 - [ ] Tools for converting draft into a structured course
 - [ ] Archive export / import format for editing and playback
+- [ ] Hybrid app export
+
 
 ## Tools used
 

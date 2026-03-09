@@ -24,7 +24,7 @@ let FFMPEG_AVAILABLE = false;
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface Config { projectDir: string | null; exportDir: string | null; }
-interface CourseMeta { title?: string; description?: string; thumbnail?: string; author?: string; tags?: string[]; }
+interface CourseMeta { title?: string; description?: string; thumbnail?: string; author?: string; tags?: string[]; siteUrl?: string; }
 interface ModuleMeta { title?: string; description?: string; type?: string; }
 interface Course { name: string; contents: string[]; }
 
@@ -358,11 +358,14 @@ const DEFAULT_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1
 
 function buildModuleHtml(opts: {
   courseTitle: string; modTitle: string; modSlug: string;
-  description: string; slides: any[]; thumbnail: string | null;
+  description: string; slides: any[]; thumbnail: string | null; siteUrl?: string;
 }): string {
-  const { courseTitle, modTitle, modSlug, description, slides, thumbnail } = opts;
+  const { courseTitle, modTitle, modSlug, description, slides, thumbnail, siteUrl } = opts;
   const assetBase = "../../assets";
-  const ogImg = thumbnail ? `../../${thumbnail}` : "";
+  const base = siteUrl ? siteUrl.replace(/\/$/, "") : "";
+  const absThumb = base && thumbnail ? `${base}/assets/thumbnail.jpg` : "";
+  const ogImg = absThumb || (thumbnail ? `../../${thumbnail}` : "");
+  const ogUrl = base ? `${base}/modules/${modSlug}/` : "";
 
   const body = slides.map((s: any, i: number) => {
     const blocks = (s.body ?? []).map((b: any) => `    ${blockToHtml(b, assetBase)}`).join("\n");
@@ -388,6 +391,11 @@ function buildModuleHtml(opts: {
   <meta property="og:description" content="${escapeHtml(description)}">
   ${ogImg ? `<meta property="og:image" content="${escapeHtml(ogImg)}">` : ""}
   <meta property="og:type" content="article">
+  ${ogUrl ? `<meta property="og:url" content="${escapeHtml(ogUrl)}">` : ""}
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${escapeHtml(modTitle)}">
+  <meta name="twitter:description" content="${escapeHtml(description)}">
+  ${absThumb ? `<meta name="twitter:image" content="${escapeHtml(absThumb)}">` : ""}
   <link rel="canonical" href="../../index.html#module=${encodeURIComponent(modSlug)}">
   <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="../../player.css">
@@ -410,6 +418,10 @@ function buildCourseIndexHtml(meta: CourseMeta, courseName: string, modules: Mod
   const title = meta.title ?? courseName;
   const description = meta.description ?? "";
   const thumbnail = meta.thumbnail ? "assets/thumbnail.jpg" : "";
+  const base = meta.siteUrl ? meta.siteUrl.replace(/\/$/, "") : "";
+  const absThumb = base && thumbnail ? `${base}/${thumbnail}` : "";
+  const ogImg = absThumb || thumbnail;
+  const ogUrl = base || "";
 
   const modList = modules.map(m =>
     `      <li><a href="${escapeHtml(m.path)}">${escapeHtml(m.title)}</a></li>`
@@ -435,8 +447,13 @@ function buildCourseIndexHtml(meta: CourseMeta, courseName: string, modules: Mod
   <meta name="description" content="${escapeHtml(description)}">
   <meta property="og:title" content="${escapeHtml(title)}">
   <meta property="og:description" content="${escapeHtml(description)}">
-  ${thumbnail ? `<meta property="og:image" content="${escapeHtml(thumbnail)}">` : ""}
+  ${ogImg ? `<meta property="og:image" content="${escapeHtml(ogImg)}">` : ""}
   <meta property="og:type" content="website">
+  ${ogUrl ? `<meta property="og:url" content="${escapeHtml(ogUrl)}/">` : ""}
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${escapeHtml(title)}">
+  <meta name="twitter:description" content="${escapeHtml(description)}">
+  ${absThumb ? `<meta name="twitter:image" content="${escapeHtml(absThumb)}">` : ""}
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="player.css">
   <link rel="manifest" href="manifest.webmanifest">
@@ -476,38 +493,119 @@ function buildWebManifest(meta: CourseMeta, courseName: string, pngIconSizes: nu
   return manifest;
 }
 
-function buildSwJs(timestamp: number, assets: string[]): string {
-  // Exclude HLS transport-stream segments from precache: Caddy returns 206
-  // (partial content) for media files which Cache.addAll() rejects.
-  // Segments are fetched live on demand via the network-fallback fetch handler.
-  const precache = assets.filter(a => !a.endsWith('.ts'));
-  const list = JSON.stringify(precache.map(a => `./${a}`), null, 2);
+function buildSwJs(timestamp: number, assets: string[], hashes: Record<string, string>): string {
+  // Split into static assets (fetched in parallel) and HLS segments (fetched sequentially
+  // to avoid saturating the server). Both are precached during install.
+  // Using fetch(new Request(url)) (plain GET, no Range header) ensures Caddy returns 200
+  // rather than 206, which is required for cache.put().
+  const segments = assets.filter(a => a.endsWith('.ts'));
+  const statics  = assets.filter(a => !a.endsWith('.ts'));
+  const hashJson   = JSON.stringify(hashes, null, 2);
+  const staticList = JSON.stringify(statics.map(a => `./${a}`), null, 2);
+  const segList    = JSON.stringify(segments.map(a => `./${a}`), null, 2);
   return `// Generated service worker — useful course export
-const CACHE = 'useful-course-${timestamp}';
-const ASSETS = ${list};
+const CACHE    = 'useful-course-${timestamp}';
+const HASHES   = ${hashJson};
+const STATIC   = ${staticList};
+const SEGMENTS = ${segList};
 
-self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE).then(c =>
-      Promise.all(ASSETS.map(url =>
-        fetch(url).then(r => { if (r.status === 200) return c.put(url, r); }).catch(() => {})
-      ))
-    )
-  );
-  self.skipWaiting();
-});
+// Install completes instantly — all caching happens in activate so the SW
+// activates and claims the page before hls.js makes its first segment request.
+self.addEventListener('install', () => { self.skipWaiting(); });
 
 self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    )
-  );
-  self.clients.claim();
+  e.waitUntil((async () => {
+    const newCache = await caches.open(CACHE);
+
+    // Find the previous cache (if any) to reuse files whose hash hasn't changed,
+    // avoiding a full re-download on every re-export.
+    const oldKey = (await caches.keys()).find(k => k !== CACHE && k.startsWith('useful-course-'));
+    const oldCache = oldKey ? await caches.open(oldKey) : null;
+    const oldHashes = oldCache
+      ? await oldCache.match('__hashes').then(r => r ? r.json() : {}).catch(() => ({}))
+      : {};
+
+    async function cacheOne(url) {
+      // Skip if already in new cache (e.g. stored by the runtime populate handler)
+      if (await newCache.match(url)) return;
+      const hash = HASHES[url];
+      if (hash && oldCache && oldHashes[url] === hash) {
+        const hit = await oldCache.match(url);
+        if (hit) { await newCache.put(url, hit); return; }
+      }
+      try {
+        const r = await fetch(new Request(url));
+        if (r.status === 200) await newCache.put(url, r);
+      } catch {}
+    }
+
+    // Claim clients first so the runtime fetch handler starts intercepting
+    // immediately — any segment fetched live by hls.js will be cached on the fly.
+    await self.clients.claim();
+
+    // Static assets only (fast, parallel) — HLS segments are downloaded on demand
+    // when the user installs the PWA (see 'message' handler below).
+    await Promise.all(STATIC.map(cacheOne));
+
+    // Persist hash snapshot so the next re-export can skip unchanged statics
+    await newCache.put('__hashes', new Response(JSON.stringify(HASHES),
+      { headers: { 'Content-Type': 'application/json' } }));
+
+    // Delete old caches only after statics are safely in the new cache
+    if (oldKey) await caches.delete(oldKey);
+  })());
+});
+
+// Triggered by the player when the user accepts the PWA install prompt.
+// Downloads all HLS segments so the full course is available offline.
+self.addEventListener('message', e => {
+  if (e.data?.type !== 'precache-segments') return;
+  e.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+
+    async function notifyClients(msg) {
+      const clients = await self.clients.matchAll({ type: 'window' });
+      for (const c of clients) c.postMessage(msg);
+    }
+
+    const total = SEGMENTS.length;
+    await notifyClients({ type: 'sw-caching', done: 0, total });
+    const step = Math.max(1, Math.floor(total * 0.05));
+    let done = 0;
+    for (const url of SEGMENTS) {
+      if (!await cache.match(url)) {
+        try {
+          const r = await fetch(new Request(url));
+          if (r.status === 200) await cache.put(url, r);
+        } catch {}
+      }
+      done++;
+      if (done % step === 0 || done === total) {
+        await notifyClients({ type: 'sw-caching', done, total });
+      }
+    }
+    await notifyClients({ type: 'sw-ready' });
+  })());
 });
 
 self.addEventListener('fetch', e => {
-  e.respondWith(caches.match(e.request).then(r => r ?? fetch(e.request)));
+  // Only intercept same-origin GET requests.
+  // ignoreVary: true prevents Vary header mismatches from causing cache misses
+  // when hls.js or the browser adds headers (e.g. Accept-Encoding) that differ
+  // from those used during the install-time precache fetch.
+  if (e.request.method !== 'GET') return;
+  e.respondWith((async () => {
+    const cached = await caches.match(e.request, { ignoreVary: true });
+    if (cached) return cached;
+    // Cache miss — fetch live and populate the cache so segments fetched by
+    // hls.js before the SW claimed the page are available offline from now on.
+    const response = await fetch(e.request);
+    if (response.status === 200) {
+      const cache = await caches.open(CACHE);
+      cache.put(e.request, response.clone());
+    }
+    return response;
+  })());
 });
 `;
 }
@@ -661,6 +759,7 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
         await Deno.writeTextFile(`${modOutDir}/index.html`, buildModuleHtml({
           courseTitle, modTitle, modSlug, description,
           slides: rawSlides, thumbnail: courseMeta.thumbnail ? "assets/thumbnail.jpg" : null,
+          siteUrl: courseMeta.siteUrl,
         }));
         allFiles.push(`modules/${modSlug}/index.html`);
 
@@ -679,6 +778,11 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
       }
       job.progress.done++;
     }
+
+    // modules/index.html — redirect to course root so bare /modules/ URLs don't 404
+    await Deno.writeTextFile(`${outDir}/modules/index.html`,
+      `<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <meta http-equiv="refresh" content="0; url=../index.html">\n  <link rel="canonical" href="../index.html">\n  <title>Redirecting…</title>\n</head>\n<body>\n  <p><a href="../index.html">Go to course</a></p>\n</body>\n</html>`);
+    allFiles.push("modules/index.html");
 
     // manifest.json
     const manifest: Record<string, unknown> = {
@@ -702,11 +806,23 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
       JSON.stringify(buildWebManifest(courseMeta, course, pngIconSizes), null, 2));
     allFiles.push("manifest.webmanifest");
 
-    // sw-manifest.json (debug / tooling)
-    await Deno.writeTextFile(`${outDir}/sw-manifest.json`, JSON.stringify(allFiles, null, 2));
+    // Compute SHA-256 hashes for all exported files (used for selective cache reuse on re-export)
+    const hashes: Record<string, string> = {};
+    for (const f of allFiles) {
+      try {
+        const data = await Deno.readFile(`${outDir}/${f}`);
+        const buf  = await crypto.subtle.digest('SHA-256', data);
+        hashes[`./${f}`] = Array.from(new Uint8Array(buf))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+      } catch { /* skip if file somehow missing */ }
+    }
 
-    // sw.js (precache list baked in)
-    await Deno.writeTextFile(`${outDir}/sw.js`, buildSwJs(Date.now(), allFiles));
+    // sw-manifest.json — asset list with integrity hashes (useful for debugging/tooling)
+    await Deno.writeTextFile(`${outDir}/sw-manifest.json`,
+      JSON.stringify(allFiles.map(f => ({ path: f, hash: hashes[`./${f}`] ?? '' })), null, 2));
+
+    // sw.js (precache list + hashes baked in)
+    await Deno.writeTextFile(`${outDir}/sw.js`, buildSwJs(Date.now(), allFiles, hashes));
     allFiles.push("sw.js");
 
     job.state = "done";

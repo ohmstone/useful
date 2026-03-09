@@ -324,6 +324,25 @@ async function init() {
     const swUrl   = `${state.courseRoot}/sw.js`;
     const swScope = state.courseRoot + '/';
     navigator.serviceWorker.register(swUrl, { scope: swScope }).catch(() => {});
+
+    // Listen for background caching progress from the SW activate event
+    navigator.serviceWorker.addEventListener('message', e => {
+      const el   = document.getElementById('sw-status');
+      const txt  = document.getElementById('sw-status-text');
+      const fill = document.getElementById('sw-status-bar-fill');
+      if (!el) return;
+      if (e.data?.type === 'sw-caching') {
+        el.hidden = false;
+        const pct = e.data.total > 0 ? Math.round((e.data.done / e.data.total) * 100) : 0;
+        if (txt)  txt.textContent = `Fetching for offline\u2026 ${pct}%`;
+        if (fill) fill.style.width = `${pct}%`;
+      } else if (e.data?.type === 'sw-ready') {
+        el.hidden = false;
+        if (txt)  txt.textContent = 'Ready for offline';
+        if (fill) fill.style.width = '100%';
+        setTimeout(() => { el.hidden = true; }, 3000);
+      }
+    });
   }
 
   // PWA install prompt
@@ -332,12 +351,6 @@ async function init() {
     state.installPrompt = e;
     document.getElementById('btn-install')?.removeAttribute('hidden');
   });
-
-  // Offline banner
-  const updateOnline = () =>
-    document.getElementById('offline-banner')?.toggleAttribute('hidden', navigator.onLine);
-  window.addEventListener('online',  updateOnline);
-  window.addEventListener('offline', updateOnline);
 
   // Fetch manifest
   try {
@@ -376,7 +389,6 @@ function _deriveCourseSlug() {
 
 function renderShell(appEl) {
   appEl.innerHTML = `
-    <div id="offline-banner" hidden>Offline — playing from cache.</div>
     <div id="player-shell">
       <div id="player-area">
         <div id="slide-stage">
@@ -410,7 +422,7 @@ function renderShell(appEl) {
               <option value="2">2×</option>
             </select>
             <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen"><i class="icon-fullscreen"></i></button>
-            <button class="ctrl-btn" id="btn-lessons"    title="Lessons"><i class="icon-menu"></i>&nbsp;Lessons</button>
+            <button class="ctrl-btn" id="btn-modules"    title="Modules"><i class="icon-menu"></i>&nbsp;Modules</button>
           </div>
         </div>
         <div id="resume-prompt" hidden>
@@ -428,6 +440,10 @@ function renderShell(appEl) {
         <div id="course-progress-wrap">
           <div id="course-progress-label"></div>
         </div>
+        <div id="sw-status" hidden>
+          <span id="sw-status-text"></span>
+          <div id="sw-status-bar-wrap"><div id="sw-status-bar-fill"></div></div>
+        </div>
       </nav>
     </div>`;
 
@@ -443,7 +459,7 @@ function renderShell(appEl) {
   document.getElementById('btn-skip-back').addEventListener('click', () => seek(currentTime() - 10));
   document.getElementById('btn-skip-fwd').addEventListener('click',  () => seek(currentTime() + 10));
   document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
-  document.getElementById('btn-lessons').addEventListener('click',    toggleSidebar);
+  document.getElementById('btn-modules').addEventListener('click',    toggleSidebar);
   document.getElementById('btn-install').addEventListener('click',    doInstall);
   document.getElementById('speed-select').addEventListener('change', e => {
     const rate = parseFloat(e.target.value) || 1;
@@ -519,7 +535,7 @@ function renderShell(appEl) {
   document.getElementById('player-shell').addEventListener('click', e => {
     const sidebar = document.getElementById('module-sidebar');
     if (sidebar?.classList.contains('is-open') && !sidebar.contains(e.target) &&
-        e.target.id !== 'btn-lessons') {
+        e.target.id !== 'btn-modules') {
       closeSidebar();
     }
   });
@@ -901,7 +917,7 @@ function toggleFullscreen() {
   }
 }
 
-// ── Sidebar / lessons drawer ──────────────────────────────────────────────────
+// ── Sidebar / modules drawer ──────────────────────────────────────────────────
 
 function toggleSidebar() {
   document.getElementById('module-sidebar')?.classList.toggle('is-open');
@@ -961,6 +977,10 @@ async function doInstall() {
     state.installPrompt = null;
     const btn = document.getElementById('btn-install');
     if (btn) btn.hidden = true;
+    // Ask the SW to download all HLS segments for offline use
+    const sw = navigator.serviceWorker.controller
+      ?? (await navigator.serviceWorker.ready).active;
+    sw?.postMessage({ type: 'precache-segments' });
   }
 }
 
