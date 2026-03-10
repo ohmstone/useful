@@ -492,6 +492,46 @@ html, body {
 }
 #btn-sw-update:hover { opacity: 0.85; }
 
+/* ── Data-usage confirmation modal ───────────────────────────────────────── */
+
+#data-modal {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+#data-modal[hidden] { display: none; }
+#data-modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px 18px;
+  max-width: 320px;
+  width: calc(100% - 40px);
+  display: flex; flex-direction: column; gap: 16px;
+}
+#data-modal-msg {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+  margin: 0;
+}
+#data-modal-btns {
+  display: flex; gap: 8px; justify-content: flex-end;
+}
+#data-modal-btns button {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: var(--font);
+  border-radius: var(--radius);
+  cursor: pointer;
+  border: 1px solid var(--border);
+}
+#btn-data-cancel  { background: var(--surface-hi); color: var(--text-muted); }
+#btn-data-confirm { background: var(--accent);     color: #fff; border-color: var(--accent); }
+#btn-data-cancel:hover  { opacity: 0.8; }
+#btn-data-confirm:hover { opacity: 0.85; }
+
 /* ── Fullscreen: sidebar accessible as hover overlay ─────────────────────── */
 
 #player-shell:fullscreen #module-sidebar {

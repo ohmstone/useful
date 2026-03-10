@@ -487,6 +487,15 @@ function renderShell(appEl) {
           <button id="btn-sw-update">Update now</button>
         </div>
       </nav>
+    </div>
+    <div id="data-modal" hidden>
+      <div id="data-modal-box">
+        <p id="data-modal-msg"></p>
+        <div id="data-modal-btns">
+          <button id="btn-data-cancel">Cancel</button>
+          <button id="btn-data-confirm">Download</button>
+        </div>
+      </div>
     </div>`;
 
   appEl.classList.add('player-active');
@@ -1027,6 +1036,48 @@ function _showResumePromptIfNeeded() {
   }
 }
 
+// ── Data-usage helpers ────────────────────────────────────────────────────────
+
+function _fmtBytes(b) {
+  if (b >= 1024 * 1024 * 1024) return `${(b / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  if (b >= 1024 * 1024)        return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.ceil(b / 1024)} KB`;
+}
+
+// Show the data-usage confirmation modal. Returns a Promise<boolean>.
+// The confirm button click is a fresh user gesture, safe for calling prompt().
+function _confirmDataUsage(message) {
+  return new Promise(resolve => {
+    const modal      = document.getElementById('data-modal');
+    const confirmBtn = document.getElementById('btn-data-confirm');
+    const cancelBtn  = document.getElementById('btn-data-cancel');
+    document.getElementById('data-modal-msg').textContent = message;
+    modal.hidden = false;
+
+    function cleanup(result) {
+      modal.hidden = true;
+      confirmBtn.removeEventListener('click', onConfirm);
+      cancelBtn.removeEventListener('click',  onCancel);
+      resolve(result);
+    }
+    const onConfirm = () => cleanup(true);
+    const onCancel  = () => cleanup(false);
+    confirmBtn.addEventListener('click', onConfirm);
+    cancelBtn.addEventListener('click',  onCancel);
+  });
+}
+
+// Ask the waiting SW how many bytes need to be fetched for the pending update.
+function _getUpdateBytes(reg) {
+  return new Promise(resolve => {
+    if (!reg?.waiting) { resolve(0); return; }
+    const ch = new MessageChannel();
+    ch.port1.onmessage = e => resolve(e.data?.bytes ?? 0);
+    reg.waiting.postMessage({ type: 'GET_UPDATE_SIZE' }, [ch.port2]);
+    setTimeout(() => resolve(0), 3000); // fallback if SW is unresponsive
+  });
+}
+
 // ── SW update notice ──────────────────────────────────────────────────────────
 
 function _showUpdateNotice() {
@@ -1037,15 +1088,25 @@ function _showUpdateNotice() {
 async function _applyUpdate() {
   const reg = state._swReg;
   if (!reg?.waiting) return;
-  // Hide update notice and show a brief "Updating…" status
+
+  // For large updates, confirm with the user first so they're not surprised
+  // by significant data usage. Small updates proceed silently.
+  const bytes = await _getUpdateBytes(reg);
+  if (bytes > 10 * 1024 * 1024) {
+    const ok = await _confirmDataUsage(
+      `This update includes ${_fmtBytes(bytes)} of new content to download.`
+    );
+    if (!ok) return;
+  }
+
+  // Hide the update notice and show "Updating…" until sw-caching messages arrive.
   const updateEl = document.getElementById('sw-update');
   if (updateEl) updateEl.hidden = true;
-  const statusEl = document.getElementById('sw-status');
+  const statusEl  = document.getElementById('sw-status');
   const statusTxt = document.getElementById('sw-status-text');
-  const statusFill = document.getElementById('sw-status-bar-fill');
   if (statusEl)  statusEl.hidden = false;
   if (statusTxt) statusTxt.textContent = 'Updating\u2026';
-  if (statusFill) statusFill.style.width = '100%';
+
   // Signal intent to reload before triggering skipWaiting so the
   // controllerchange handler knows this is a user-confirmed update.
   state._updatePending = true;
@@ -1056,6 +1117,18 @@ async function _applyUpdate() {
 
 async function doInstall() {
   if (!state.installPrompt) return;
+
+  // Warn the user how much data installing offline will use.
+  const bytes = state.manifest?.offlineBytes ?? 0;
+  if (bytes > 0) {
+    const ok = await _confirmDataUsage(
+      `This will download the full course for offline use (~${_fmtBytes(bytes)}).`
+    );
+    if (!ok) return;
+  }
+
+  // _confirmDataUsage resolves from a button click (a fresh user gesture),
+  // so calling prompt() here is safe for the browser's install-prompt API.
   state.installPrompt.prompt();
   const { outcome } = await state.installPrompt.userChoice;
   if (outcome === 'accepted') {
