@@ -1027,6 +1027,22 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
+  // ── Delete module  DELETE /api/modules/:course/:module ───────────────────
+
+  if (seg[0] === "api" && seg[1] === "modules" && seg.length === 4 && method === "DELETE") {
+    const [course, moduleName] = [decodeURIComponent(seg[2]), decodeURIComponent(seg[3])];
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    try {
+      await Deno.remove(mDir(pd, course, moduleName), { recursive: true });
+      const mods = await readModules(pd, course);
+      await writeModules(pd, course, mods.filter(m => m !== moduleName));
+    } catch {
+      return Response.json({ error: "Could not delete module" }, { status: 400 });
+    }
+    return new Response(null, { status: 204 });
+  }
+
   // ── Slides  GET|PUT /api/slides/:course/:module ──────────────────────────
 
   if (seg[0] === "api" && seg[1] === "slides" && seg.length === 4) {

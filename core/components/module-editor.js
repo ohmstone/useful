@@ -80,6 +80,19 @@ const STYLES = `
   }
   .syntax-btn:hover, .files-btn:hover { color: var(--text); border-color: var(--accent); }
 
+  .delete-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    font-size: 11px;
+    font-family: var(--font);
+    padding: 4px 9px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .delete-btn:hover { color: var(--danger); border-color: var(--danger); }
+
   /* ── Syntax reference modal ── */
   .modal-backdrop {
     position: fixed; inset: 0;
@@ -492,6 +505,7 @@ class ModuleEditor extends HTMLElement {
           <button class="files-btn" id="btn-info">✎ Info</button>
           <button class="files-btn" id="btn-files">Files</button>
           <button class="syntax-btn" id="btn-syntax">? Syntax</button>
+          <button class="delete-btn" id="btn-delete">Delete</button>
           <button class="play-btn" id="btn-play">▶ Play</button>
         </div>
         <div class="tab-row">
@@ -585,6 +599,22 @@ class ModuleEditor extends HTMLElement {
 
     // Syntax reference modal
     sr.querySelector('#btn-syntax').addEventListener('click', () => this.#showSyntaxModal());
+
+    // Delete module
+    sr.querySelector('#btn-delete').addEventListener('click', () => this.#deleteModule());
+  }
+
+  async #deleteModule() {
+    if (!confirm('Delete this module?')) return;
+    try {
+      const res = await fetch(`/api/modules/${enc(this.course)}/${enc(this.module)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+    } catch {
+      alert('Could not delete module.');
+      return;
+    }
+    this.#stop();
+    this.dispatchEvent(new CustomEvent('nav-back', { bubbles: true, composed: true }));
   }
   #showInfoModal() {
     const sr = this.shadowRoot;
