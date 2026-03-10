@@ -620,6 +620,7 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
 
     const courseSlug = slugify(course);
     const outDir = `${expDir}/${courseSlug}`;
+    try { await Deno.remove(outDir, { recursive: true }); } catch { /* doesn't exist yet */ }
     await Deno.mkdir(`${outDir}/assets`, { recursive: true });
     const allFiles: string[] = [];
 
