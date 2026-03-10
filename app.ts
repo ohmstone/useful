@@ -509,9 +509,16 @@ const HASHES   = ${hashJson};
 const STATIC   = ${staticList};
 const SEGMENTS = ${segList};
 
-// Install completes instantly — all caching happens in activate so the SW
-// activates and claims the page before hls.js makes its first segment request.
-self.addEventListener('install', () => { self.skipWaiting(); });
+// First install: no previous cache → activate immediately so the page is
+// controlled before hls.js makes its first segment request.
+// Update (re-export): previous cache exists → stay in waiting until the user
+// confirms the update via the player UI (receives SKIP_WAITING message).
+self.addEventListener('install', e => {
+  e.waitUntil((async () => {
+    const oldKey = (await caches.keys()).find(k => k !== CACHE && k.startsWith('useful-course-'));
+    if (!oldKey) self.skipWaiting();
+  })());
+});
 
 self.addEventListener('activate', e => {
   e.waitUntil((async () => {
@@ -558,7 +565,9 @@ self.addEventListener('activate', e => {
 
 // Triggered by the player when the user accepts the PWA install prompt.
 // Downloads all HLS segments so the full course is available offline.
+// Also handles SKIP_WAITING sent when the user confirms a content update.
 self.addEventListener('message', e => {
+  if (e.data?.type === 'SKIP_WAITING') { self.skipWaiting(); return; }
   if (e.data?.type !== 'precache-segments') return;
   e.waitUntil((async () => {
     const cache = await caches.open(CACHE);

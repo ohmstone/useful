@@ -467,6 +467,31 @@ html, body {
 }
 
 
+/* ── Content update notice ────────────────────────────────────────────────── */
+
+#sw-update {
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#sw-update[hidden] { display: none; }
+#sw-update-text { font-size: 11px; color: var(--text-muted); }
+#btn-sw-update {
+  align-self: flex-start;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: var(--font);
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  line-height: 1.6;
+}
+#btn-sw-update:hover { opacity: 0.85; }
+
 /* ── Fullscreen: sidebar accessible as hover overlay ─────────────────────── */
 
 #player-shell:fullscreen #module-sidebar {

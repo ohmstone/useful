@@ -285,6 +285,8 @@ const state = {
   audioRaf:      null,  // RAF id for smooth progress updates in audio mode
   _lastSavedSec: -1,
   _audioEnded:   false, // true when HLS ended early and we switched to timer mode
+  _swReg:        null,  // ServiceWorkerRegistration, stored for update flow
+  _updatePending: false, // true once user confirms update; triggers reload on controllerchange
 };
 
 // ── Controls auto-hide ─────────────────────────────────────────────────────
@@ -324,7 +326,34 @@ async function init() {
   if ('serviceWorker' in navigator) {
     const swUrl   = `${state.courseRoot}/sw.js`;
     const swScope = state.courseRoot + '/';
-    navigator.serviceWorker.register(swUrl, { scope: swScope }).catch(() => {});
+    const reg = await navigator.serviceWorker.register(swUrl, { scope: swScope }).catch(() => null);
+    if (reg) {
+      state._swReg = reg;
+
+      // When a new SW has installed and is waiting (update case), show notice.
+      // Wire up the listener before checking reg.waiting so no race.
+      reg.addEventListener('updatefound', () => {
+        const installing = reg.installing;
+        if (!installing) return;
+        installing.addEventListener('statechange', () => {
+          // 'installed' state means the SW is now waiting. Only treat as update
+          // when there is an existing controller (i.e. not the very first install).
+          if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+            _showUpdateNotice();
+          }
+        });
+      });
+
+      // Reload the page once the updated SW takes control — but only after the
+      // user explicitly confirmed the update (flag set in _applyUpdate).
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (state._updatePending) location.reload();
+      });
+
+      // Check for new SW on reconnect and every 5 minutes while the app is open.
+      window.addEventListener('online', () => reg.update().catch(() => {}));
+      setInterval(() => reg.update().catch(() => {}), 5 * 60 * 1000);
+    }
 
     // Listen for background caching progress from the SW activate event
     navigator.serviceWorker.addEventListener('message', e => {
@@ -365,6 +394,14 @@ async function init() {
   state.courseSlug = _deriveCourseSlug();
 
   renderShell(appEl);
+
+  // If a new SW was already waiting when the page loaded (e.g. the export
+  // updated content while this tab was in the background), show the notice now
+  // that the DOM exists. Only applies when there's an existing controller, so
+  // this doesn't trigger on the very first install.
+  if (state._swReg?.waiting && navigator.serviceWorker?.controller) {
+    _showUpdateNotice();
+  }
 
   // Determine initial module slug
   const hashSlug  = new URLSearchParams(location.hash.slice(1)).get('module');
@@ -445,6 +482,10 @@ function renderShell(appEl) {
           <span id="sw-status-text"></span>
           <div id="sw-status-bar-wrap"><div id="sw-status-bar-fill"></div></div>
         </div>
+        <div id="sw-update" hidden>
+          <span id="sw-update-text">Course content has been updated.</span>
+          <button id="btn-sw-update">Update now</button>
+        </div>
       </nav>
     </div>`;
 
@@ -462,6 +503,7 @@ function renderShell(appEl) {
   document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
   document.getElementById('btn-modules').addEventListener('click',    toggleSidebar);
   document.getElementById('btn-install').addEventListener('click',    doInstall);
+  document.getElementById('btn-sw-update').addEventListener('click',  _applyUpdate);
   document.getElementById('speed-select').addEventListener('change', e => {
     const rate = parseFloat(e.target.value) || 1;
     // In timer mode, accumulate elapsed before changing rate so time doesn't jump
@@ -983,6 +1025,31 @@ function _showResumePromptIfNeeded() {
   } else {
     prompt.hidden = true;
   }
+}
+
+// ── SW update notice ──────────────────────────────────────────────────────────
+
+function _showUpdateNotice() {
+  const el = document.getElementById('sw-update');
+  if (el) el.hidden = false;
+}
+
+async function _applyUpdate() {
+  const reg = state._swReg;
+  if (!reg?.waiting) return;
+  // Hide update notice and show a brief "Updating…" status
+  const updateEl = document.getElementById('sw-update');
+  if (updateEl) updateEl.hidden = true;
+  const statusEl = document.getElementById('sw-status');
+  const statusTxt = document.getElementById('sw-status-text');
+  const statusFill = document.getElementById('sw-status-bar-fill');
+  if (statusEl)  statusEl.hidden = false;
+  if (statusTxt) statusTxt.textContent = 'Updating\u2026';
+  if (statusFill) statusFill.style.width = '100%';
+  // Signal intent to reload before triggering skipWaiting so the
+  // controllerchange handler knows this is a user-confirmed update.
+  state._updatePending = true;
+  reg.waiting.postMessage({ type: 'SKIP_WAITING' });
 }
 
 // ── PWA install ───────────────────────────────────────────────────────────────
