@@ -1,9 +1,96 @@
 # useful
 
-Instructional design tool optimized for self-hosted websites leveraging AI
-tools.
+Instructional design tool optimized for self-hosted websites leveraging AI.
+
+[**Try useful examples here!**](https://tonelord.github.io/useful-course-examples/)
 
 Main repo: [useful](https://github.com/ohmstone/useful).
+
+## Requirements
+
+To run this on your machine you will need:
+
+- To use Linux environment
+  - Untested on Mac or Windows
+  - Use [Docker](https://www.docker.com/) if it helps
+- [Git](https://git-scm.com/)
+- [Denolang](https://deno.com/)
+- [FFmpeg](https://ffmpeg.org/)
+
+## Setup
+
+- Install the requirements
+- Open the project in a terminal
+- Clone with submodules
+
+```bash
+git clone --recurse-submodules <repository-url>
+```
+
+- Run the app
+
+```bash
+deno task serve
+```
+
+- Go to the URL it displays in the terminal
+
+### Setup note
+
+This project has been designed specifically for use with an LLM coding agent.
+Your ability to adapt this project to your setup can be augmented by the use
+of one, and is recommended.
+
+### Recommended
+
+For serving exported courses in production, it is recommended to use:
+
+- [Caddy](https://caddyserver.com/): as a web server
+  - Use strict CSP rules, for example:
+    ```nginx
+    header {
+      Content-Security-Policy "default-src 'self'; style-src 'self'; worker-src 'self' blob:; script-src 'self'; img-src 'self' data:; frame-src; connect-src 'self'; font-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; media-src blob: 'self';"
+      Referrer-Policy "strict-origin-when-cross-origin"
+      Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+      X-Content-Type-Options "nosniff"
+    }
+    ```
+- [Brotli](https://github.com/google/brotli): for text compression
+- AVIF: for optimised images
+
+## TODO
+
+(not exhaustive, actively modified)
+
+- [x] Server and config setup for running system as a web app
+- [x] Web app based configuration and project creation
+- [x] Local TTS and audio editor for voiceover of content
+- [x] Voiceover and slide (and animation) alignment tool
+- [x] Tools for turning structured content into slides
+- [x] Process for publishing content as website
+- [ ] Documentation on how to use (preferably created with _useful_)
+- [ ] Tools for creating optional interactive quizes + more plugins
+- [ ] Process for converting course into videos
+- [ ] Creating voices for cloning, cleaning input/output audio
+- [ ] Rich text editor for fleshing out initial draft course
+- [ ] Tools for converting draft into a structured course
+- [ ] Archive export / import format for editing and playback
+- [ ] Hybrid app export
+
+## Tools used
+
+- Deno
+- FFmpeg
+- [pocket tts](https://github.com/kyutai-labs/pocket-tts?tab=readme-ov-file)
+
+## Potential tools
+
+- [ollama](https://ollama.com/)
+
+## Contributing
+
+This project is in initial stages. If you find this and want to help, I'd prefer
+PRs over issues. Feel free to reach out anytime to github@tonelord.cc.
 
 ## Goal
 
@@ -27,28 +114,6 @@ can leverage these advances today and not entirely depend on remote tools.
 
 The current name was chosen because I want to build something _useful_.
 
-## TODO
+## License
 
-(not exhaustive, actively modified)
-
-- [ ] Server and config setup for running system as a web app
-- [ ] Web app based configuration and project creation
-- [ ] Rich text editor for fleshing out initial draft course
-- [ ] Tools for converting draft into a structured course
-- [ ] Tools for turning structured content into slides
-- [ ] Tools for creating optional interactive quizes
-- [ ] Local TTS and audio editor for voiceover of content
-- [ ] Voiceover and slide (and animation) alignment tool
-- [ ] Process for publishing content as website
-- [ ] Process for converting course into videos
-- [ ] Documentation on how to use (preferably created with _useful_).
-
-## Potential tools
-
-- [pocket tts](https://github.com/kyutai-labs/pocket-tts?tab=readme-ov-file)
-- [ollama](https://ollama.com/)
-
-## Contributing
-
-This project is in initial stages. If you find this and want to help, I'd prefer
-PRs over issues. Feel free to reach out anytime to github@tonelord.cc.
+MIT
