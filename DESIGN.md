@@ -197,7 +197,8 @@ and re-registered automatically on each startup.
 | PUT | `/api/meta/:course/:module` | `ModuleMeta` | 204 | Write module `_meta.json` |
 | GET | `/api/export/config` | — | `{ exportDir }` | Get export directory |
 | POST | `/api/export/config` | `{ exportDir }` | `{ exportDir }` | Set export directory (must exist) |
-| POST | `/api/export/:course` | — | `{ ok, path }` | Trigger full course export |
+| GET | `/api/export/:course/analyze` | — | `{ referencedFiles, hasPlugins, allInjectFiles }` | Pre-export analysis: which `_inject/` files are referenced in slides/metadata |
+| POST | `/api/export/:course` | `{ includeFiles?: string[] }` | `{ ok, path }` | Trigger full course export; `includeFiles` = explicit list of `_inject/` files to copy (auto-detected if omitted) |
 | GET | `/api/export/:course/status` | — | `{ state, progress, error }` | Poll export progress |
 | GET | `/api/export/:course/download` | — | `application/zip` | Download course as ZIP archive |
 
@@ -341,7 +342,7 @@ conflicting clip; if no valid position exists the action is cancelled.
 
 See [EXPORT.md](EXPORT.md) for the full specification. Summary:
 
-- Triggered from `<course-view>` via `POST /api/export/:course`.
+- Triggered from `<course-view>` via `POST /api/export/:course` with `{ includeFiles }` (explicit list of `_inject/` files; auto-detected from slide AST if omitted).
 - Requires **ffmpeg** for HLS audio assembly; checked at startup with a clear warning if absent.
 - Output: `<exportDir>/<course-slug>/` — a fully static directory, no server required.
 - Each module gets its own `index.html` (standalone, SEO-indexable), `slides.json` (AST),

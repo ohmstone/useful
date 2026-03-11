@@ -161,6 +161,37 @@ const STYLES = `
   .state-msg { font-size: 14px; color: var(--text-muted); padding: 32px 0; text-align: center; }
   .error-msg { font-size: 13px; color: var(--danger); }
 
+  /* File picker */
+  .file-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 180px;
+    overflow-y: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 8px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .file-picker-list::-webkit-scrollbar { width: 6px; }
+  .file-picker-list::-webkit-scrollbar-track { background: transparent; }
+  .file-picker-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .file-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 12px;
+    font-family: monospace;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .file-picker-item input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .file-picker-item.auto label { color: var(--text-muted); }
+  .file-picker-hint { font-size: 11px; color: var(--text-dim); }
+
   /* Export dir status */
   .export-dir-path {
     font-size: 12px;
@@ -193,7 +224,9 @@ class CourseView extends HTMLElement {
   #editingMeta       = false;
   #editingExport     = false;
   #changingExportLoc = false;
-  #exporting         = false;
+  #exportStep        = 'idle'; // 'idle' | 'analyzing' | 'pick-files' | 'exporting'
+  #analyzeData       = null;   // { referencedFiles, hasPlugins, allInjectFiles }
+  #selectedFiles     = new Set();
   #error             = null;
   #metaMsg           = null;  // { ok: bool, text: string }
   #exportMsg         = null;
@@ -274,6 +307,49 @@ class CourseView extends HTMLElement {
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     this.#exportDir = data.exportDir;
+  }
+
+  async #startExport() {
+    this.#exportStep = 'analyzing';
+    this.#exportMsg  = null;
+    this.#render();
+    try {
+      const res  = await fetch(`/api/export/${enc(this.course)}/analyze`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      this.#analyzeData  = data;
+      this.#selectedFiles = new Set(data.referencedFiles);
+      if (data.hasPlugins && data.allInjectFiles.length > 0) {
+        this.#exportStep = 'pick-files';
+        this.#render();
+      } else {
+        await this.#doExport();
+      }
+    } catch (e) {
+      this.#exportMsg  = { ok: false, text: e.message };
+      this.#exportStep = 'idle';
+      this.#render();
+    }
+  }
+
+  async #doExport() {
+    this.#exportStep = 'exporting';
+    this.#render();
+    try {
+      const res  = await fetch(`/api/export/${enc(this.course)}`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ includeFiles: [...this.#selectedFiles] }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      this.#exportMsg = { ok: true, text: `Exported to: ${data.path}` };
+    } catch (e) {
+      this.#exportMsg = { ok: false, text: e.message };
+    }
+    this.#exportStep  = 'idle';
+    this.#analyzeData = null;
+    this.#render();
   }
 
   #render() {
@@ -361,12 +437,35 @@ class CourseView extends HTMLElement {
             ${this.#exportMsg
               ? `<span class="${this.#exportMsg.ok ? 'form-ok' : 'form-error'}">${esc(this.#exportMsg.text)}</span>`
               : ''}
-            <div class="form-row">
-              <button class="btn btn-primary" id="btn-do-export" ${this.#exporting ? 'disabled' : ''}>
-                ${this.#exporting ? 'Exporting…' : '↑ Export Now'}
-              </button>
-              <button class="btn" id="btn-change-loc">Change Location</button>
-            </div>
+            ${this.#exportStep === 'pick-files' && this.#analyzeData ? `
+              <div class="field">
+                <label>Files to include in export</label>
+                <span class="field-hint">Plugin scripts can load data files at runtime — check any additional files they may need.</span>
+                <div class="file-picker-list" id="file-picker">
+                  ${this.#analyzeData.allInjectFiles.map(f => {
+                    const auto = this.#selectedFiles.has(f);
+                    return `<label class="file-picker-item${auto ? ' auto' : ''}">
+                      <input type="checkbox" value="${esc(f)}"${auto ? ' checked' : ''}>
+                      ${esc(f)}
+                    </label>`;
+                  }).join('')}
+                  ${this.#analyzeData.allInjectFiles.length === 0
+                    ? `<span class="file-picker-hint">No files in _inject/</span>` : ''}
+                </div>
+              </div>
+              <div class="form-row">
+                <button class="btn btn-primary" id="btn-confirm-export">↑ Export Now</button>
+                <button class="btn" id="btn-cancel-pick">Cancel</button>
+              </div>
+            ` : `
+              <div class="form-row">
+                <button class="btn btn-primary" id="btn-do-export"
+                  ${this.#exportStep !== 'idle' ? 'disabled' : ''}>
+                  ${{ idle: '↑ Export Now', analyzing: 'Analysing…', exporting: 'Exporting…', 'pick-files': '↑ Export Now' }[this.#exportStep]}
+                </button>
+                <button class="btn" id="btn-change-loc">Change Location</button>
+              </div>
+            `}
           ` : `
             <p class="panel-title">Export Directory</p>
             <p style="font-size:13px;color:var(--text-muted);margin:0">
@@ -466,23 +565,26 @@ class CourseView extends HTMLElement {
       this.#editingMeta      = false;
       this.#exportMsg        = null;
       this.#changingExportLoc = false;
+      this.#exportStep       = 'idle';
+      this.#analyzeData      = null;
       this.#render();
     });
 
-    // ── Export now ──────────────────────────────────────────────────────────
-    sr.querySelector('#btn-do-export')?.addEventListener('click', async () => {
-      this.#exporting = true;
-      this.#exportMsg = null;
-      this.#render();
-      try {
-        const res  = await fetch(`/api/export/${enc(this.course)}`, { method: 'POST' });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        this.#exportMsg = { ok: true, text: `Exported to: ${data.path}` };
-      } catch (e) {
-        this.#exportMsg = { ok: false, text: e.message };
-      }
-      this.#exporting = false;
+    // ── Export now (triggers analysis first if needed) ──────────────────────
+    sr.querySelector('#btn-do-export')?.addEventListener('click', () => this.#startExport());
+
+    // ── Confirm export after file picker ────────────────────────────────────
+    sr.querySelector('#btn-confirm-export')?.addEventListener('click', () => {
+      // Read current checkbox state from the DOM
+      const checked = [...sr.querySelectorAll('#file-picker input[type="checkbox"]:checked')]
+        .map(cb => cb.value);
+      this.#selectedFiles = new Set(checked);
+      this.#doExport();
+    });
+
+    sr.querySelector('#btn-cancel-pick')?.addEventListener('click', () => {
+      this.#exportStep  = 'idle';
+      this.#analyzeData = null;
       this.#render();
     });
 
