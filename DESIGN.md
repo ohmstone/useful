@@ -172,6 +172,7 @@ and re-registered automatically on each startup.
 | GET | `/api/modules/:course` | — | `string[]` | Ordered module list |
 | PUT | `/api/modules/:course` | `string[]` | 204 | Reorder modules |
 | POST | `/api/modules/:course` | `{ name }` | `{ name }` | Create module (dir + scaffolding) |
+| DELETE | `/api/modules/:course/:module` | — | 204 | Delete module dir + remove from index |
 | GET | `/api/slides/:course/:module` | — | `text/plain` | Get slides.txt content |
 | PUT | `/api/slides/:course/:module` | `text/plain` | 204 | Save slides.txt |
 | GET | `/api/track/:course/:module` | — | `TrackClip[]` | Get track composition |

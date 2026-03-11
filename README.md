@@ -20,22 +20,24 @@ To run this on your machine you will need:
 - Install the requirements
 - Open the project in a terminal
 - Clone with submodules
+
 ```bash
 git clone --recurse-submodules <repository-url>
 ```
+
 - Run the app
+
 ```bash
 deno task serve
 ```
+
 - Go to the URL it displays in the terminal
 
 ### Setup note
 
-This project has been designed specifically for use with
-an LLM coding agent. You're ability to adapt this project
-to your setup can be augmented by the use of one, and is
-recommended.
-
+This project has been designed specifically for use with an LLM coding agent.
+Your ability to adapt this project to your setup can be augmented by the use
+of one, and is recommended.
 
 ### Recommended
 
@@ -53,7 +55,6 @@ For serving exported courses in production, it is recommended to use:
     ```
 - [Brotli](https://github.com/google/brotli): for text compression
 - AVIF: for optimised images
-
 
 ## TODO
 
@@ -73,7 +74,6 @@ For serving exported courses in production, it is recommended to use:
 - [ ] Tools for converting draft into a structured course
 - [ ] Archive export / import format for editing and playback
 - [ ] Hybrid app export
-
 
 ## Tools used
 

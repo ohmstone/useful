@@ -551,13 +551,26 @@ self.addEventListener('install', e => {
 
     // Persist hash snapshot for the next install comparison
     await newCache.put('__hashes', new Response(JSON.stringify(HASHES), …));
-    self.skipWaiting();
+    // Old cache is deleted in the 'activate' handler after new assets are cached.
   })());
 });
 
-self.addEventListener('activate', e => { /* delete old caches */ });
+// First install: activate immediately.
+// Update: stay in 'waiting' until the user confirms via the player UI.
+self.addEventListener('install', e => {
+  e.waitUntil((async () => {
+    const oldKey = (await caches.keys()).find(k => k !== CACHE && k.startsWith('useful-course-'));
+    if (!oldKey) self.skipWaiting();
+  })());
+});
+
+self.addEventListener('activate', e => { /* claim clients, delete old caches */ });
 self.addEventListener('fetch', e => {
-  e.respondWith(caches.match(e.request).then(r => r ?? fetch(e.request)));
+  e.respondWith(caches.match(e.request, { ignoreVary: true }).then(r => r ?? fetch(e.request)));
+});
+self.addEventListener('message', e => {
+  if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();   // user-confirmed update
+  if (e.data?.type === 'precache-segments') { /* download HLS offline */ }
 });
 ```
 
@@ -572,9 +585,31 @@ Key properties:
 - **Plain GET for segments**: `fetch(new Request(url))` strips any Range header, ensuring
   the server returns a full 200 response that `cache.put()` can accept (206 Partial Content
   is rejected by the Cache API).
+- **User-confirmed updates**: on re-export the new SW installs but stays in the `waiting`
+  state instead of immediately taking control. The player detects this and shows an
+  "Update now" button in the sidebar. Only when the user taps it does the SW skip waiting,
+  activate, recache content, and reload the page.
 
 The asset list and hash map are baked into `sw.js` directly (not fetched from
 `sw-manifest.json` at runtime) to avoid a network round-trip on install.
+
+### Update detection
+
+`player.js` checks for content updates at three points:
+1. **On app open** — `navigator.serviceWorker.register()` automatically compares the live
+   `sw.js` byte-for-byte with what's installed.
+2. **On network reconnect** — `window.addEventListener('online', …)` calls
+   `registration.update()`.
+3. **Every 5 minutes** — `setInterval` calls `registration.update()` while the app is open.
+
+When a new SW is detected (either already `waiting` on load, or newly installed while the app
+is open), a notice appears at the bottom of the module sidebar:
+
+> **Course content has been updated.** \[Update now\]
+
+Tapping "Update now" posts `SKIP_WAITING` to the waiting SW, which activates, caches the
+new content, and triggers a page reload via the `controllerchange` event. First-time installs
+(no previous cache) are not affected — the SW activates immediately as before.
 
 ### Install prompt
 

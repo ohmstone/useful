@@ -493,7 +493,7 @@ function buildWebManifest(meta: CourseMeta, courseName: string, pngIconSizes: nu
   return manifest;
 }
 
-function buildSwJs(timestamp: number, assets: string[], hashes: Record<string, string>): string {
+function buildSwJs(timestamp: number, assets: string[], hashes: Record<string, string>, sizes: Record<string, number>): string {
   // Split into static assets (fetched in parallel) and HLS segments (fetched sequentially
   // to avoid saturating the server). Both are precached during install.
   // Using fetch(new Request(url)) (plain GET, no Range header) ensures Caddy returns 200
@@ -503,15 +503,27 @@ function buildSwJs(timestamp: number, assets: string[], hashes: Record<string, s
   const hashJson   = JSON.stringify(hashes, null, 2);
   const staticList = JSON.stringify(statics.map(a => `./${a}`), null, 2);
   const segList    = JSON.stringify(segments.map(a => `./${a}`), null, 2);
+  // Segment sizes (bytes) keyed by URL — used by GET_UPDATE_SIZE to estimate download delta.
+  const segSizes: Record<string, number> = {};
+  for (const s of segments) segSizes[`./${s}`] = sizes[`./${s}`] ?? 0;
+  const sizesJson = JSON.stringify(segSizes, null, 2);
   return `// Generated service worker — useful course export
 const CACHE    = 'useful-course-${timestamp}';
 const HASHES   = ${hashJson};
+const SIZES    = ${sizesJson};
 const STATIC   = ${staticList};
 const SEGMENTS = ${segList};
 
-// Install completes instantly — all caching happens in activate so the SW
-// activates and claims the page before hls.js makes its first segment request.
-self.addEventListener('install', () => { self.skipWaiting(); });
+// First install: no previous cache → activate immediately so the page is
+// controlled before hls.js makes its first segment request.
+// Update (re-export): previous cache exists → stay in waiting until the user
+// confirms the update via the player UI (receives SKIP_WAITING message).
+self.addEventListener('install', e => {
+  e.waitUntil((async () => {
+    const oldKey = (await caches.keys()).find(k => k !== CACHE && k.startsWith('useful-course-'));
+    if (!oldKey) self.skipWaiting();
+  })());
+});
 
 self.addEventListener('activate', e => {
   e.waitUntil((async () => {
@@ -543,22 +555,86 @@ self.addEventListener('activate', e => {
     // immediately — any segment fetched live by hls.js will be cached on the fly.
     await self.clients.claim();
 
-    // Static assets only (fast, parallel) — HLS segments are downloaded on demand
-    // when the user installs the PWA (see 'message' handler below).
+    // Static assets (fast, parallel).
     await Promise.all(STATIC.map(cacheOne));
 
-    // Persist hash snapshot so the next re-export can skip unchanged statics
+    // Migrate HLS segments. Runs on re-export (oldCache exists) so the
+    // offline-first state is fully preserved and extended after content updates:
+    //   • Unchanged segment (hash match) → copied in-memory, zero network.
+    //   • Changed or new segment         → fetched from network.
+    // Every segment ends up in the new cache so the course remains fully
+    // available offline without a second manual install step.
+    // Progress messages let the player show a caching status bar.
+    // First installs (no oldCache) still defer segments to the install-prompt path.
+    if (oldCache) {
+      const total = SEGMENTS.length;
+      const step  = Math.max(1, Math.floor(total * 0.05));
+      let done = 0;
+
+      async function notifyClients(msg) {
+        const clients = await self.clients.matchAll({ type: 'window' });
+        for (const c of clients) c.postMessage(msg);
+      }
+
+      if (total > 0) await notifyClients({ type: 'sw-caching', done: 0, total });
+
+      for (const url of SEGMENTS) {
+        if (!await newCache.match(url)) {
+          const oldEntry = await oldCache.match(url);
+          const hash     = HASHES[url];
+          if (oldEntry && hash && oldHashes[url] === hash) {
+            await newCache.put(url, oldEntry); // unchanged — copy, no network hit
+          } else {
+            try {
+              const r = await fetch(new Request(url));
+              if (r.status === 200) await newCache.put(url, r);
+            } catch {}
+          }
+        }
+        done++;
+        if (done % step === 0 || done === total) {
+          await notifyClients({ type: 'sw-caching', done, total });
+        }
+      }
+
+      if (total > 0) await notifyClients({ type: 'sw-ready' });
+    }
+
+    // Persist hash snapshot (statics + segments) for the next re-export comparison.
     await newCache.put('__hashes', new Response(JSON.stringify(HASHES),
       { headers: { 'Content-Type': 'application/json' } }));
 
-    // Delete old caches only after statics are safely in the new cache
+    // Delete old cache only after everything has been safely migrated.
     if (oldKey) await caches.delete(oldKey);
   })());
 });
 
 // Triggered by the player when the user accepts the PWA install prompt.
 // Downloads all HLS segments so the full course is available offline.
+// Also handles SKIP_WAITING sent when the user confirms a content update,
+// and GET_UPDATE_SIZE which queries how many bytes will need to be downloaded.
 self.addEventListener('message', e => {
+  if (e.data?.type === 'SKIP_WAITING') { self.skipWaiting(); return; }
+
+  // Reply with the number of bytes that would be fetched from the network on
+  // update: segments whose hash has changed or that are entirely new.
+  // Uses a MessageChannel port so the reply goes only to the asking client.
+  if (e.data?.type === 'GET_UPDATE_SIZE') {
+    (async () => {
+      const oldKey    = (await caches.keys()).find(k => k !== CACHE && k.startsWith('useful-course-'));
+      const oldCache  = oldKey ? await caches.open(oldKey) : null;
+      const oldHashes = oldCache
+        ? await oldCache.match('__hashes').then(r => r ? r.json() : {}).catch(() => ({}))
+        : {};
+      let bytes = 0;
+      for (const url of SEGMENTS) {
+        if (oldHashes[url] !== HASHES[url]) bytes += SIZES[url] ?? 0;
+      }
+      e.ports[0]?.postMessage({ bytes });
+    })();
+    return;
+  }
+
   if (e.data?.type !== 'precache-segments') return;
   e.waitUntil((async () => {
     const cache = await caches.open(CACHE);
@@ -620,6 +696,7 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
 
     const courseSlug = slugify(course);
     const outDir = `${expDir}/${courseSlug}`;
+    try { await Deno.remove(outDir, { recursive: true }); } catch { /* doesn't exist yet */ }
     await Deno.mkdir(`${outDir}/assets`, { recursive: true });
     const allFiles: string[] = [];
 
@@ -784,12 +861,22 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
       `<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <meta http-equiv="refresh" content="0; url=../index.html">\n  <link rel="canonical" href="../index.html">\n  <title>Redirecting…</title>\n</head>\n<body>\n  <p><a href="../index.html">Go to course</a></p>\n</body>\n</html>`);
     allFiles.push("modules/index.html");
 
+    // Compute total HLS segment bytes for offline-size estimation shown in the player UI.
+    // Done here (before hash loop) so we can read each .ts file only once.
+    let offlineBytes = 0;
+    for (const f of allFiles) {
+      if (f.endsWith('.ts')) {
+        try { offlineBytes += (await Deno.stat(`${outDir}/${f}`)).size; } catch { /* ignore */ }
+      }
+    }
+
     // manifest.json
     const manifest: Record<string, unknown> = {
       title: courseTitle,
       description: courseMeta.description ?? "",
       tags: courseMeta.tags ?? [],
       modules: moduleEntries,
+      offlineBytes,
     };
     if (courseMeta.author) manifest.author = courseMeta.author;
     if (courseMeta.thumbnail) manifest.thumbnail = "assets/thumbnail.jpg";
@@ -806,14 +893,18 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
       JSON.stringify(buildWebManifest(courseMeta, course, pngIconSizes), null, 2));
     allFiles.push("manifest.webmanifest");
 
-    // Compute SHA-256 hashes for all exported files (used for selective cache reuse on re-export)
+    // Compute SHA-256 hashes and byte sizes for all exported files.
+    // Hashes drive selective cache reuse on re-export; sizes are baked into sw.js
+    // so the player can show an estimated download cost before caching segments.
     const hashes: Record<string, string> = {};
+    const sizes:  Record<string, number> = {};
     for (const f of allFiles) {
       try {
         const data = await Deno.readFile(`${outDir}/${f}`);
         const buf  = await crypto.subtle.digest('SHA-256', data);
         hashes[`./${f}`] = Array.from(new Uint8Array(buf))
           .map(b => b.toString(16).padStart(2, '0')).join('');
+        if (f.endsWith('.ts')) sizes[`./${f}`] = data.byteLength;
       } catch { /* skip if file somehow missing */ }
     }
 
@@ -821,8 +912,8 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
     await Deno.writeTextFile(`${outDir}/sw-manifest.json`,
       JSON.stringify(allFiles.map(f => ({ path: f, hash: hashes[`./${f}`] ?? '' })), null, 2));
 
-    // sw.js (precache list + hashes baked in)
-    await Deno.writeTextFile(`${outDir}/sw.js`, buildSwJs(Date.now(), allFiles, hashes));
+    // sw.js (precache list + hashes + segment sizes baked in)
+    await Deno.writeTextFile(`${outDir}/sw.js`, buildSwJs(Date.now(), allFiles, hashes, sizes));
     allFiles.push("sw.js");
 
     job.state = "done";
@@ -1025,6 +1116,22 @@ async function handle(req: Request): Promise<Response> {
       }
       return Response.json({ name: moduleName }, { status: 201 });
     }
+  }
+
+  // ── Delete module  DELETE /api/modules/:course/:module ───────────────────
+
+  if (seg[0] === "api" && seg[1] === "modules" && seg.length === 4 && method === "DELETE") {
+    const [course, moduleName] = [decodeURIComponent(seg[2]), decodeURIComponent(seg[3])];
+    const { projectDir: pd } = await readConfig();
+    if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+    try {
+      await Deno.remove(mDir(pd, course, moduleName), { recursive: true });
+      const mods = await readModules(pd, course);
+      await writeModules(pd, course, mods.filter(m => m !== moduleName));
+    } catch {
+      return Response.json({ error: "Could not delete module" }, { status: 400 });
+    }
+    return new Response(null, { status: 204 });
   }
 
   // ── Slides  GET|PUT /api/slides/:course/:module ──────────────────────────
