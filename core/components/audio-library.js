@@ -128,6 +128,7 @@ const STYLES = `
     flex-direction: column;
     gap: 4px;
     overflow-y: auto;
+    max-height: 40vh;
   }
 
   .clip {
