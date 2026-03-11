@@ -2,6 +2,8 @@
 
 Instructional design tool optimized for self-hosted websites leveraging AI.
 
+[**Try useful examples here!**](https://tonelord.github.io/useful-course-examples/)
+
 Main repo: [useful](https://github.com/ohmstone/useful).
 
 ## Requirements
