@@ -57,7 +57,8 @@ New API routes for export config and trigger:
 |--------|------|------|----------|-------------|
 | GET | `/api/export/config` | — | `{ exportDir: string\|null }` | Get export dir |
 | POST | `/api/export/config` | `{ exportDir }` | `{ exportDir }` | Set export dir (must exist) |
-| POST | `/api/export/:course` | — | `{ ok, path }` or error | Trigger full course export |
+| GET | `/api/export/:course/analyze` | — | `{ referencedFiles, hasPlugins, allInjectFiles }` | Pre-export file analysis |
+| POST | `/api/export/:course` | `{ includeFiles?: string[] }` | `{ ok, path }` or error | Trigger full course export; `includeFiles` = explicit list of `_inject/` filenames to copy to `assets/` (auto-detected from slide AST + course metadata if omitted) |
 | GET | `/api/export/:course/status` | — | `{ state, progress, error }` | Poll export progress |
 | GET | `/api/export/:course/download` | — | `application/zip` | Download course as ZIP archive |
 
@@ -764,7 +765,9 @@ if (!FFMPEG_AVAILABLE) {
    - `extra/hls.js` → `<course>/hls.js`
    - Generate `player.css` and `player.js` from templates (no build step; templated strings
      in `app.ts` or served from `core/export/`).
-5. Copy inject assets: all files in `<projectDir>/_inject/` → `assets/`.
+5. Copy inject assets: only files in `<projectDir>/_inject/` that are explicitly listed in
+   the `includeFiles` request body (or auto-detected from slide `@image`/`@plugin` directives
+   and `_meta.json` thumbnail if `includeFiles` is omitted) → `assets/`.
 6. Read `_meta.json` (course-level). Copy thumbnail if set.
 7. For each module (in order from `modules.json`):
    a. Read module `_meta.json` (optional).

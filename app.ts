@@ -282,6 +282,65 @@ function blockToHtml(b: any, assetBase: string): string {
   }
 }
 
+// Collect inject file references from a slide AST block (recursive)
+function collectInjectRefs(block: any, refs: Set<string>, pluginFiles: Set<string>): void {
+  if (block.type === "image") {
+    const src: string = block.src ?? "";
+    if (src.startsWith("/api/inject/")) refs.add(decodeURIComponent(src.slice(12)));
+  } else if (block.type === "plugin") {
+    if (block.file) { refs.add(block.file); pluginFiles.add(block.file); }
+    if (block.dataFile) refs.add(block.dataFile);
+  } else if (Array.isArray(block.blocks)) {
+    for (const b of block.blocks) collectInjectRefs(b, refs, pluginFiles);
+  } else if (Array.isArray(block.cols)) {
+    // columns block — each col has a .blocks array
+    for (const col of block.cols) {
+      for (const b of col.blocks ?? []) collectInjectRefs(b, refs, pluginFiles);
+    }
+  }
+}
+
+// Analyse which _inject/ files a course actually references across all modules
+async function analyzeInjectFiles(course: string, pd: string): Promise<{
+  referencedFiles: string[];
+  hasPlugins: boolean;
+  allInjectFiles: string[];
+}> {
+  const modules = await readModules(pd, course);
+  const courseMeta = await readMeta<CourseMeta>(courseMetaFile(pd, course));
+
+  const refs = new Set<string>();
+  const pluginFiles = new Set<string>();
+
+  if (courseMeta.thumbnail) refs.add(courseMeta.thumbnail);
+
+  for (const mod of modules) {
+    try {
+      const text = await Deno.readTextFile(slidesFile(pd, course, mod));
+      const slides = parseSlides(text);
+      for (const slide of slides) {
+        for (const block of (slide as any).body ?? []) {
+          collectInjectRefs(block, refs, pluginFiles);
+        }
+      }
+    } catch { /* slides.txt missing */ }
+  }
+
+  // Safety: reject filenames that look like path traversal
+  const safe = (f: string) => f.length > 0 && !f.includes("/") && !f.includes("..");
+  const referencedFiles = [...refs].filter(safe);
+
+  const allInjectFiles: string[] = [];
+  try {
+    for await (const e of Deno.readDir(`${pd}/_inject`)) {
+      if (e.isFile) allInjectFiles.push(e.name);
+    }
+    allInjectFiles.sort();
+  } catch { /* _inject may not exist */ }
+
+  return { referencedFiles, hasPlugins: pluginFiles.size > 0, allInjectFiles };
+}
+
 // Rewrite /api/inject/<file> → assets/<file> in parsed slide AST (for slides.json)
 function rewriteInjectPaths(obj: any): any {
   return JSON.parse(JSON.stringify(obj), (_: string, v: any) => {
@@ -688,7 +747,7 @@ self.addEventListener('fetch', e => {
 
 // ── Main export pipeline ──────────────────────────────────────────────────────
 
-async function runExport(course: string, pd: string, expDir: string): Promise<void> {
+async function runExport(course: string, pd: string, expDir: string, includeFiles?: string[]): Promise<void> {
   const job = exportJobs.get(course)!;
   try {
     const modules = await readModules(pd, course);
@@ -762,15 +821,14 @@ async function runExport(course: string, pd: string, expDir: string): Promise<vo
     catch { await Deno.writeTextFile(`${outDir}/favicon.svg`, DEFAULT_ICON_SVG); }
     allFiles.push("favicon.svg");
 
-    // Copy all _inject/ files to assets/
-    try {
-      for await (const e of Deno.readDir(`${pd}/_inject`)) {
-        if (!e.isFile) continue;
-        await Deno.copyFile(`${pd}/_inject/${e.name}`, `${outDir}/assets/${e.name}`).catch(() => {});
-        const key = `assets/${e.name}`;
-        if (!allFiles.includes(key)) allFiles.push(key);
-      }
-    } catch { /* _inject may not exist */ }
+    // Copy selected _inject/ files to assets/ (auto-detected if not specified)
+    const filesToInclude = includeFiles ?? (await analyzeInjectFiles(course, pd)).referencedFiles;
+    for (const name of filesToInclude) {
+      if (name.includes("..") || name.includes("/")) continue;
+      await Deno.copyFile(`${pd}/_inject/${name}`, `${outDir}/assets/${name}`).catch(() => {});
+      const key = `assets/${name}`;
+      if (!allFiles.includes(key)) allFiles.push(key);
+    }
 
     // Process each module
     job.progress.total = modules.length;
@@ -1385,6 +1443,13 @@ async function handle(req: Request): Promise<Response> {
 
     const course = decodeURIComponent(seg[2]);
 
+    // GET /api/export/:course/analyze
+    if (method === "GET" && seg[3] === "analyze") {
+      if (!pd) return Response.json({ error: "No project directory" }, { status: 400 });
+      const analysis = await analyzeInjectFiles(course, pd);
+      return Response.json(analysis);
+    }
+
     // GET /api/export/:course/status
     if (method === "GET" && seg[3] === "status") {
       const job = exportJobs.get(course);
@@ -1407,10 +1472,18 @@ async function handle(req: Request): Promise<Response> {
       }
       const courseSlug = slugify(course);
       const outPath = `${expDir}/${courseSlug}`;
+      let includeFiles: string[] | undefined;
+      try {
+        const ct = req.headers.get("content-type") ?? "";
+        if (ct.includes("application/json")) {
+          const body = await req.json() as { includeFiles?: unknown };
+          if (Array.isArray(body.includeFiles)) includeFiles = (body.includeFiles as unknown[]).filter((f): f is string => typeof f === "string");
+        }
+      } catch { /* no body */ }
       exportJobs.set(course, {
         state: "running", progress: { done: 0, total: 0 }, modules: {}, path: outPath,
       });
-      runExport(course, pd, expDir); // fire-and-forget; poll /status for progress
+      runExport(course, pd, expDir, includeFiles); // fire-and-forget; poll /status for progress
       return Response.json({ ok: true, path: outPath });
     }
   }
