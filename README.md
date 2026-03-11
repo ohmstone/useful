@@ -36,7 +36,7 @@ deno task serve
 ### Setup note
 
 This project has been designed specifically for use with an LLM coding agent.
-You're ability to adapt this project to your setup can be augmented by the use
+Your ability to adapt this project to your setup can be augmented by the use
 of one, and is recommended.
 
 ### Recommended
