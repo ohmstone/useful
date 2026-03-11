@@ -799,6 +799,7 @@ function scaleCanvas() {
 // ── Playback ──────────────────────────────────────────────────────────────────
 
 function togglePlay() {
+  document.getElementById('resume-prompt').hidden = true;
   if (state.slidesData?.audio && !state._audioEnded) {
     // HLS / native audio mode
     if (state.playing) {
