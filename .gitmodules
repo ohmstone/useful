@@ -1,3 +1,3 @@
 [submodule "extra/pocket-tts-deno"]
 	path = extra/pocket-tts-deno
-	url = https://github.com/ohmstone/pocket-tts-deno
+	url = https://codeberg.org/ohmstone/pocket-tts-deno

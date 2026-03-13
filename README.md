@@ -2,9 +2,11 @@
 
 Instructional design tool optimized for self-hosted websites leveraging AI.
 
-[**Try useful examples here!**](https://tonelord.github.io/useful-course-examples/)
+[**Try useful examples here!**](https://tonelord.codeberg.page/useful-course-examples/)
 
-Main repo: [useful](https://github.com/ohmstone/useful).
+[Codeberg Main Repo](https://codeberg.org/ohmstone/useful).
+
+[Github Mirror](https://github.com/ohmstone/useful).
 
 ## Requirements
 
@@ -24,7 +26,7 @@ To run this on your machine you will need:
 - Clone with submodules
 
 ```bash
-git clone --recurse-submodules <repository-url>
+git clone --recurse-submodules https://codeberg.org/ohmstone/useful.git
 ```
 
 - Run the app
